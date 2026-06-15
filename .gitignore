@@ -1,0 +1,34 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Model / RAG caches
+/tmp/
+*.pt
+*.bin
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
+
+# Data (large PDFs — index into Qdrant, don't commit)
+backend/data/ncert_pdfs/
+backend/data/pyq_bank/
+backend/data/nta_cutoffs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
