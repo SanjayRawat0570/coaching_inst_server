@@ -136,6 +136,21 @@ CREATE TABLE flashcards (
   created_at    TIMESTAMP DEFAULT NOW()
 );
 
+-- Concept similarity RPC (knowledge graph cosine search via pgvector)
+CREATE OR REPLACE FUNCTION match_concepts(
+  query_embedding VECTOR(384),
+  match_count INT DEFAULT 5
+)
+RETURNS TABLE (id UUID, name TEXT, subject TEXT, chapter TEXT, similarity FLOAT)
+LANGUAGE sql STABLE AS $$
+  SELECT c.id, c.name, c.subject, c.chapter,
+         1 - (c.embedding <=> query_embedding) AS similarity
+  FROM concepts c
+  WHERE c.embedding IS NOT NULL
+  ORDER BY c.embedding <=> query_embedding
+  LIMIT match_count;
+$$;
+
 -- Indexes
 CREATE INDEX ON concepts USING ivfflat (embedding vector_cosine_ops) WITH (lists=50);
 CREATE INDEX ON weakness_map (student_id, score);

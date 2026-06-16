@@ -21,13 +21,13 @@ export default function ParentReport() {
   return (
     <Shell requireRole="parent" title="Weekly Progress Report">
       {loading ? (
-        <p className="text-slate-400">Loading…</p>
+        <p className="muted">Loading…</p>
       ) : !data ? (
-        <p className="text-slate-400">No report available yet.</p>
+        <p className="muted">No report available yet.</p>
       ) : (
         <div className="space-y-4 max-w-2xl">
-          <div className="bg-white border rounded-xl p-5">
-            <p className="text-sm text-slate-500">Child</p>
+          <div className="card p-5">
+            <p className="text-sm muted">Child</p>
             <p className="text-xl font-semibold">{data.student_name || "—"}</p>
           </div>
 
@@ -37,19 +37,19 @@ export default function ParentReport() {
             <Stat label="Doubts asked" value={data.summary?.doubts ?? 0} />
           </div>
 
-          <div className="bg-white border rounded-xl p-5">
+          <div className="card p-5">
             <h2 className="font-semibold mb-2">This week&apos;s note</h2>
-            <p className="text-slate-700 whitespace-pre-wrap leading-relaxed">
+            <p className="text-slate-300 whitespace-pre-wrap leading-relaxed">
               {data.latest_report || "Your first weekly report will arrive on Sunday."}
             </p>
           </div>
 
           {data.summary?.weak_concepts?.length > 0 && (
-            <div className="bg-white border rounded-xl p-5">
+            <div className="card p-5">
               <h2 className="font-semibold mb-2">Focus areas</h2>
               <div className="flex flex-wrap gap-2">
                 {data.summary.weak_concepts.map((c, i) => (
-                  <span key={i} className="bg-red-50 text-red-700 px-3 py-1 rounded-full text-sm">
+                  <span key={i} className="badge bg-neon-rose/10 text-neon-rose border border-neon-rose/30">
                     {c}
                   </span>
                 ))}
@@ -64,9 +64,9 @@ export default function ParentReport() {
 
 function Stat({ label, value }) {
   return (
-    <div className="bg-white border rounded-xl p-4 text-center">
-      <p className="text-2xl font-bold">{value}</p>
-      <p className="text-xs text-slate-500">{label}</p>
+    <div className="card card-hover p-4 text-center">
+      <p className="text-2xl font-bold grad-text">{value}</p>
+      <p className="text-xs muted">{label}</p>
     </div>
   );
 }

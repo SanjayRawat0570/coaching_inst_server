@@ -74,24 +74,24 @@ export default function TestPage() {
       {!active && (
         <div className="space-y-3">
           {tests.length === 0 && (
-            <p className="text-slate-400">
+            <p className="muted">
               No tests ready yet. Your teacher will assign one.
             </p>
           )}
           {tests.map((t) => (
             <div
               key={t.id}
-              className="bg-white border rounded-xl p-4 flex items-center justify-between"
+              className="card card-hover p-4 flex items-center justify-between"
             >
               <div>
                 <p className="font-medium">{t.subject || "Mixed"} test</p>
-                <p className="text-sm text-slate-500">
+                <p className="text-sm muted">
                   {(t.questions || []).length} questions · negative marking on
                 </p>
               </div>
               <button
                 onClick={() => begin(t)}
-                className="bg-brand hover:bg-brand-dark text-white px-4 py-2 rounded-lg"
+                className="btn-primary"
               >
                 Start
               </button>
@@ -103,13 +103,13 @@ export default function TestPage() {
       {/* Active test */}
       {active && !result && (
         <div>
-          <div className="flex items-center justify-between mb-4 sticky top-14 bg-slate-50 py-2">
-            <span className="text-sm text-slate-500">
+          <div className="flex items-center justify-between mb-4 sticky top-16 z-10 bg-ink-900/80 backdrop-blur border border-white/10 rounded-xl px-4 py-2">
+            <span className="text-sm muted">
               {Object.keys(answers).length}/{active.questions.length} answered
             </span>
             <span
               className={
-                "font-mono text-lg " + (timeLeft < 60 ? "text-red-600" : "text-slate-700")
+                "font-mono text-lg " + (timeLeft < 60 ? "text-neon-rose" : "text-slate-200")
               }
             >
               ⏱ {mmss}
@@ -118,8 +118,8 @@ export default function TestPage() {
 
           <div className="space-y-5">
             {active.questions.map((q, i) => (
-              <div key={i} className="bg-white border rounded-xl p-4">
-                <div className="flex justify-between text-xs text-slate-400 mb-1">
+              <div key={i} className="card p-4">
+                <div className="flex justify-between text-xs muted mb-1">
                   <span>Q{i + 1} · {q.concept}</span>
                   <span>+{q.marks ?? 4} / −{q.negative ?? 1}</span>
                 </div>
@@ -129,8 +129,10 @@ export default function TestPage() {
                     <label
                       key={oi}
                       className={
-                        "border rounded-lg px-3 py-2 cursor-pointer " +
-                        (answers[i] === oi ? "border-brand bg-indigo-50" : "border-slate-200")
+                        "border rounded-lg px-3 py-2 cursor-pointer transition " +
+                        (answers[i] === oi
+                          ? "border-brand bg-brand/15 text-white"
+                          : "border-white/10 hover:bg-white/5")
                       }
                     >
                       <input
@@ -151,7 +153,7 @@ export default function TestPage() {
           <button
             onClick={submit}
             disabled={submitting}
-            className="mt-6 bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg disabled:opacity-60"
+            className="btn-success mt-6 px-6"
           >
             {submitting ? "Submitting…" : "Submit test"}
           </button>
@@ -160,14 +162,14 @@ export default function TestPage() {
 
       {/* Result */}
       {result && (
-        <div className="bg-white border rounded-xl p-6 max-w-md">
+        <div className="card p-6 max-w-md shadow-glow">
           <h2 className="text-xl font-semibold mb-2">Result</h2>
-          <p className="text-3xl font-bold text-brand">
-            {result.score} <span className="text-base text-slate-400">/ {result.evaluation?.total_marks}</span>
+          <p className="text-4xl font-extrabold grad-text">
+            {result.score} <span className="text-base muted">/ {result.evaluation?.total_marks}</span>
           </p>
           {result.air_rank && (
             <p className="mt-3 text-sm">
-              📊 Predicted rank: <span className="font-medium">{result.air_rank}</span>
+              📊 Predicted rank: <span className="font-medium text-neon-cyan">{result.air_rank}</span>
             </p>
           )}
           <button
@@ -175,7 +177,7 @@ export default function TestPage() {
               setActive(null);
               setResult(null);
             }}
-            className="mt-4 text-brand hover:underline"
+            className="mt-4 text-neon-violet hover:underline"
           >
             Back to tests
           </button>

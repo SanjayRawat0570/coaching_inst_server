@@ -55,6 +55,7 @@ def progress_tracker_node(state: CoachingState) -> CoachingState:
     """Translate per-concept correctness from evaluation into weakness_map updates."""
     try:
         from memory.episodic import record_milestone
+        from graph.knowledge_graph import ensure_concept, link_prerequisites
 
         result = state.get("evaluation_result") or {}
         per_concept = result.get("per_concept") or {}
@@ -67,6 +68,13 @@ def progress_tracker_node(state: CoachingState) -> CoachingState:
             total = stats.get("total", 0) or 1
             ratio = stats.get("correct", 0) / total  # 0..1 mastery signal
             update = _update_concept(sb, student_id, subject, concept, ratio)
+
+            # Knowledge graph: register the concept node; for weak concepts also
+            # infer + wire prerequisite edges (recommend what to fix first).
+            ensure_concept(concept, subject=subject)
+            if ratio < 0.5:
+                update["prerequisites"] = link_prerequisites(concept, subject=subject)
+
             updates.append(update)
             if update["crossed_mastery"]:
                 record_milestone(

@@ -58,8 +58,10 @@ def evaluate_handwritten(image_b64: str, question: str, model_answer: str = "") 
     """Gemini Vision: read a handwritten answer photo and grade it step by step."""
     try:
         from graph.llm import get_vision_llm
+        from rag.image_utils import preprocess_b64
         from langchain_core.messages import HumanMessage
 
+        image_b64 = preprocess_b64(image_b64)
         vision = get_vision_llm()
         instruction = (
             "You are grading a handwritten exam answer. Read the handwriting in the "

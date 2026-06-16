@@ -75,6 +75,7 @@ class SubmitTestRequest(BaseModel):
 
 
 class EvaluateHandwrittenRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
     image_b64: str
     question: str
     model_answer: str = ""
@@ -89,18 +90,67 @@ class MarkAlertRequest(BaseModel):
     alert_id: str
 
 
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    role: str = "student"
+    name: str = ""
+    institute_id: str | None = None
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+@app.post("/auth/signup")
+def signup(req: SignupRequest):
+    """Pre-confirmed signup via the admin API — no confirmation email, no rate limit.
+
+    Creates the auth user with email already confirmed, and (for students) provisions
+    their students profile row so the app works on first login. The frontend then signs
+    in with the same password to get a session.
+    """
+    sb = get_supabase()
+    role = req.role if req.role in ("student", "teacher", "parent", "admin") else "student"
+    institute_id = req.institute_id or None
+    try:
+        res = sb.auth.admin.create_user({
+            "email": req.email,
+            "password": req.password,
+            "email_confirm": True,
+            "user_metadata": {"role": role, "name": req.name, "institute_id": institute_id},
+        })
+    except Exception as e:
+        msg = str(e)
+        if "already" in msg.lower() or "registered" in msg.lower() or "exists" in msg.lower():
+            raise HTTPException(status_code=400, detail="Email already registered — please log in.")
+        raise HTTPException(status_code=400, detail=f"Signup failed: {msg}")
+
+    uid = res.user.id
+    if role == "student":
+        try:
+            sb.table("students").upsert({
+                "auth_id": uid,
+                "name": req.name or req.email,
+                "email": req.email,
+                "institute_id": institute_id,
+            }, on_conflict="auth_id").execute()
+        except Exception as e:
+            print(f"[signup] student profile creation failed: {e}")
+
+    return {"ok": True, "user_id": uid, "role": role}
+
+
 # ── Doubt ─────────────────────────────────────────────────────────────────────
 @app.post("/doubt")
-def doubt(req: DoubtRequest, user=Depends(get_current_user)):
-    from agents.doubt_agent import answer_doubt
+def doubt(req: DoubtRequest, background: BackgroundTasks, user=Depends(get_current_user)):
+    from agents.doubt_agent import answer_doubt, persist_doubt
     student_id = _resolve_student_id(user)
-    return answer_doubt(
+    # Answer now; defer the doubt_logs + long-term memory writes to a background task
+    result = answer_doubt(
         student_id=student_id,
         institute_id=req.institute_id,
         question=req.question,
@@ -109,7 +159,14 @@ def doubt(req: DoubtRequest, user=Depends(get_current_user)):
         image_b64=req.image_b64,
         socratic=req.socratic,
         conversation_history=req.conversation_history,
+        persist=False,
     )
+    if not result.get("error"):
+        background.add_task(
+            persist_doubt, student_id, result["question"], result["answer"],
+            req.subject, result["sources"], result["confidence"], result["input_type"],
+        )
+    return result
 
 
 @app.post("/doubt/stream")
@@ -135,12 +192,15 @@ async def doubt_stream(req: DoubtRequest, user=Depends(get_current_user)):
         try:
             async for event in graph.astream_events(initial, version="v2"):
                 kind = event["event"]
-                if kind == "on_chat_model_stream":
+                # Only stream the FINAL answer — the doubt node tags it "final_answer".
+                # Without this filter the RAG pipeline's internal LLM calls (query
+                # planning, HyDE, CRAG scoring) leak their tokens into the answer.
+                if kind == "on_chat_model_stream" and "final_answer" in event.get("tags", []):
                     chunk = event["data"]["chunk"].content
                     if chunk:
                         yield f"data: {chunk}\n\n"
-                elif kind == "on_chain_start":
-                    yield f"data: [STATUS]{event['name']}\n\n"
+                elif kind == "on_chain_start" and event.get("name") == "doubt":
+                    yield "data: [STATUS]Searching notes and thinking…\n\n"
         except Exception as e:
             yield f"data: [ERROR]{e}\n\n"
         yield "data: [DONE]\n\n"
@@ -205,7 +265,10 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
     sb.table("tests").update({"answers": req.answers}).eq("id", req.test_id).execute()
 
     from graph.coaching_graph import get_graph
-    graph = get_graph()
+    from graph.checkpointer import get_checkpointer
+    # Checkpointer records every step under thread_id=test_id (time-travel via /debug)
+    graph = get_graph(checkpointer=get_checkpointer())
+    config = {"configurable": {"thread_id": req.test_id}}
     result = graph.invoke({
         "student_id": student_id,
         "institute_id": "",
@@ -213,7 +276,7 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
         "test_id": req.test_id,
         "iteration_count": 0,
         "conversation_history": [],
-    })
+    }, config)
     return {
         "score": result.get("score"),
         "evaluation": result.get("evaluation_result"),
@@ -394,6 +457,14 @@ def admin_analytics(institute_id: str, user=Depends(require_role("admin"))):
             {"label": "Predicted renewals", "value": round(total * renewal_pct / 100)},
         ],
     }
+
+
+# ── Debug (time-travel) ───────────────────────────────────────────────────────
+@app.get("/debug/history/{thread_id}")
+def debug_history(thread_id: str, user=Depends(require_role("admin", "teacher"))):
+    """Replay/inspect every checkpoint of a past graph run (time-travel debugging)."""
+    from graph.checkpointer import get_state_history
+    return {"thread_id": thread_id, "history": get_state_history(thread_id)}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

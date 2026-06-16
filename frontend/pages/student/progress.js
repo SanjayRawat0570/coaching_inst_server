@@ -61,32 +61,35 @@ export default function ProgressPage() {
       ) : (
         <div className="grid md:grid-cols-3 gap-4">
           {/* Stat cards */}
-          <div className="bg-white border rounded-xl p-5">
-            <p className="text-sm text-slate-500">🔥 Streak</p>
-            <p className="text-3xl font-bold">{data.profile?.streak_days ?? 0} days</p>
+          <div className="card p-5">
+            <p className="text-sm muted">🔥 Streak</p>
+            <p className="text-3xl font-bold grad-text">{data.profile?.streak_days ?? 0} days</p>
           </div>
-          <div className="bg-white border rounded-xl p-5">
-            <p className="text-sm text-slate-500">⭐ XP</p>
-            <p className="text-3xl font-bold">{data.profile?.xp_points ?? 0}</p>
+          <div className="card p-5">
+            <p className="text-sm muted">⭐ XP</p>
+            <p className="text-3xl font-bold grad-text">{data.profile?.xp_points ?? 0}</p>
           </div>
-          <div className="bg-white border rounded-xl p-5">
-            <p className="text-sm text-slate-500">🎯 Target</p>
+          <div className="card p-5">
+            <p className="text-sm muted">🎯 Target</p>
             <p className="text-3xl font-bold">{data.profile?.target_exam || "—"}</p>
           </div>
 
           {/* Weakness chart */}
-          <div className="bg-white border rounded-xl p-5 md:col-span-3">
+          <div className="card p-5 md:col-span-3">
             <h2 className="font-semibold mb-3">Concept mastery (%)</h2>
             {chart.length === 0 ? (
-              <p className="text-slate-400 text-sm">
+              <p className="muted text-sm">
                 Take a test to start building your weakness map.
               </p>
             ) : (
               <ResponsiveContainer width="100%" height={Math.max(220, chart.length * 34)}>
                 <BarChart data={chart} layout="vertical" margin={{ left: 40 }}>
                   <XAxis type="number" domain={[0, 100]} hide />
-                  <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 12 }} />
-                  <Tooltip />
+                  <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 12, fill: "#94a3b8" }} />
+                  <Tooltip
+                    contentStyle={{ background: "#0b1120", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, color: "#e2e8f0" }}
+                    cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                  />
                   <Bar dataKey="score" radius={[0, 6, 6, 0]}>
                     {chart.map((entry, i) => (
                       <Cell key={i} fill={scoreColor(entry.raw)} />
@@ -98,37 +101,37 @@ export default function ProgressPage() {
           </div>
 
           {/* Flashcards due */}
-          <div className="bg-white border rounded-xl p-5 md:col-span-3">
+          <div className="card p-5 md:col-span-3">
             <h2 className="font-semibold mb-3">
               Flashcards due today ({cards.length})
             </h2>
             {cards.length === 0 ? (
-              <p className="text-slate-400 text-sm">Nothing due — nice work! 🎉</p>
+              <p className="muted text-sm">Nothing due — nice work! 🎉</p>
             ) : (
               <div className="grid md:grid-cols-2 gap-3">
                 {cards.map((c) => (
-                  <div key={c.id} className="border rounded-lg p-4">
-                    <p className="text-xs text-slate-400 mb-1">{c.concept}</p>
+                  <div key={c.id} className="rounded-xl border border-white/10 bg-ink-900/50 p-4">
+                    <p className="text-xs muted mb-1">{c.concept}</p>
                     <p className="font-medium">{c.question}</p>
                     {revealed[c.id] ? (
                       <>
-                        <p className="mt-2 text-slate-700">{c.answer}</p>
+                        <p className="mt-2 text-slate-300">{c.answer}</p>
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => review(c.id, 1)}
-                            className="flex-1 bg-red-100 text-red-700 rounded py-1 text-sm"
+                            className="flex-1 bg-rose-500/15 text-rose-300 border border-rose-500/30 rounded-lg py-1 text-sm hover:bg-rose-500/25"
                           >
                             Forgot
                           </button>
                           <button
                             onClick={() => review(c.id, 3)}
-                            className="flex-1 bg-amber-100 text-amber-700 rounded py-1 text-sm"
+                            className="flex-1 bg-amber-400/15 text-amber-300 border border-amber-400/30 rounded-lg py-1 text-sm hover:bg-amber-400/25"
                           >
                             Hard
                           </button>
                           <button
                             onClick={() => review(c.id, 5)}
-                            className="flex-1 bg-green-100 text-green-700 rounded py-1 text-sm"
+                            className="flex-1 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 rounded-lg py-1 text-sm hover:bg-emerald-500/25"
                           >
                             Easy
                           </button>
@@ -137,7 +140,7 @@ export default function ProgressPage() {
                     ) : (
                       <button
                         onClick={() => setRevealed({ ...revealed, [c.id]: true })}
-                        className="mt-2 text-brand text-sm hover:underline"
+                        className="mt-2 text-neon-violet text-sm hover:underline"
                       >
                         Show answer
                       </button>

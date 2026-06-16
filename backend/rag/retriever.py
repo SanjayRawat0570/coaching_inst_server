@@ -90,11 +90,23 @@ def crag_check(chunks: list, question: str) -> tuple[list, bool]:
 # ── Pattern 5: Web fallback ───────────────────────────────────────────────────
 def web_search_fallback(query: str) -> list:
     from langchain_community.tools.tavily_search import TavilySearchResults
-    tool = TavilySearchResults(max_results=3, api_key=os.getenv("TAVILY_API_KEY"))
-    results = tool.invoke(query)
+    try:
+        tool = TavilySearchResults(max_results=3, api_key=os.getenv("TAVILY_API_KEY"))
+        results = tool.invoke(query)
+    except Exception as e:
+        print(f"[retriever] web fallback failed: {e}")
+        return []
+    # Tavily may return a list of result dicts, or (on error/quota) a bare string.
+    if not isinstance(results, list):
+        return []
     edu_domains = ["ncert.nic.in", "nta.ac.in", "wikipedia.org", ".edu", "khanacademy"]
-    return [r["content"] for r in results
-            if any(d in r.get("url", "") for d in edu_domains)]
+    out = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        if any(d in (r.get("url") or "") for d in edu_domains):
+            out.append(r.get("content", ""))
+    return out
 
 
 # ── Pattern 6: CrossEncoder Re-ranking ────────────────────────────────────────

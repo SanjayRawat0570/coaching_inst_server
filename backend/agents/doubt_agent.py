@@ -28,8 +28,10 @@ def _read_image_question(image_b64: str) -> str:
     """Use Gemini Vision to transcribe a photographed question into text."""
     try:
         from graph.llm import get_vision_llm
+        from rag.image_utils import preprocess_b64
         from langchain_core.messages import HumanMessage
 
+        image_b64 = preprocess_b64(image_b64)
         vision = get_vision_llm()
         message = HumanMessage(content=[
             {"type": "text", "text":
@@ -71,12 +73,34 @@ Student question: {question}
 Always end your response with: '{CLOSING}'"""
 
 
-def doubt_node(state: CoachingState) -> CoachingState:
-    """LangGraph node: answer a student's doubt. Never raises — errors go in state."""
+def persist_doubt(student_id, question, answer, subject, sources, confidence, input_type):
+    """Write a doubt to doubt_logs + long-term memory. Safe to run as a BackgroundTask."""
+    from memory.long_term import add_memory
+    try:
+        _supabase().table("doubt_logs").insert({
+            "student_id": student_id,
+            "question": question,
+            "answer": answer,
+            "subject": subject,
+            "input_type": input_type,
+            "rag_sources": sources,
+            "confidence": confidence,
+        }).execute()
+    except Exception as e:
+        print(f"[doubt_agent] doubt_logs insert failed: {e}")
+    add_memory(student_id, question, answer)
+
+
+def doubt_node(state: CoachingState, persist: bool = True) -> CoachingState:
+    """LangGraph node: answer a student's doubt. Never raises — errors go in state.
+
+    persist=False skips the DB/long-term writes so the endpoint can defer them to a
+    FastAPI BackgroundTask (non-blocking response).
+    """
     try:
         from graph.llm import get_llm
         from rag.retriever import full_rag_pipeline
-        from memory.long_term import get_memories, add_memory
+        from memory.long_term import get_memories
         from memory.working import format_for_prompt, append_exchange
 
         question = state.get("input_text") or ""
@@ -109,36 +133,27 @@ def doubt_node(state: CoachingState) -> CoachingState:
         socratic = bool(state.get("current_topic") == "socratic")
         prompt = _build_prompt(question, context, memories, history_text, socratic)
 
-        # 5. Answer
+        # 5. Answer — tag this call so /doubt/stream streams ONLY the final answer
+        # (not the RAG pipeline's internal LLM calls above).
         llm = get_llm()
-        response = llm.invoke(prompt)
+        response = llm.invoke(prompt, config={"tags": ["final_answer"]})
         answer = response.content
         if CLOSING not in answer:
             answer = f"{answer}\n\n{CLOSING}"
 
-        # 6. Persist to doubt_logs
+        # 6. Persist (inline by default; deferred to a BackgroundTask when persist=False)
         input_type = "image" if state.get("input_image") else "text"
-        try:
-            _supabase().table("doubt_logs").insert({
-                "student_id": state["student_id"],
-                "question": question,
-                "answer": answer,
-                "subject": state.get("subject"),
-                "input_type": input_type,
-                "rag_sources": context_chunks,
-                "confidence": confidence,
-            }).execute()
-        except Exception as e:
-            print(f"[doubt_agent] doubt_logs insert failed: {e}")
+        if persist:
+            persist_doubt(state["student_id"], question, answer, state.get("subject"),
+                          context_chunks, confidence, input_type)
 
-        # Update memories (long-term is fire-and-forget / fails soft)
-        add_memory(state["student_id"], question, answer)
         new_history = append_exchange(
             state.get("conversation_history", []), question, answer
         )
 
         return {
             **state,
+            "input_text": question,          # resolved question (after image read)
             "agent_output": answer,
             "rag_context": context,
             "rag_sources": context_chunks,
@@ -161,10 +176,13 @@ def answer_doubt(
     image_b64: str = None,
     socratic: bool = False,
     conversation_history: list[dict] = None,
+    persist: bool = True,
 ) -> dict:
     """Convenience wrapper to run the doubt agent outside the full graph.
 
-    Returns {answer, sources, confidence, conversation_history, error}.
+    persist=False defers the doubt_logs + long-term memory writes; the returned dict
+    then includes 'question' and 'input_type' so the caller can schedule
+    persist_doubt(...) as a FastAPI BackgroundTask.
     """
     state: CoachingState = {
         "student_id": student_id,
@@ -193,9 +211,11 @@ def answer_doubt(
         "stream_tokens": False,
         "error": None,
     }
-    result = doubt_node(state)
+    result = doubt_node(state, persist=persist)
     return {
         "answer": result.get("agent_output"),
+        "question": result.get("input_text") or question,
+        "input_type": "image" if image_b64 else "text",
         "sources": result.get("rag_sources") or [],
         "confidence": result.get("rag_confidence"),
         "conversation_history": result.get("conversation_history") or [],

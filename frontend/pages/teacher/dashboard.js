@@ -43,29 +43,29 @@ export default function TeacherDashboard() {
       ) : (
         <div className="space-y-6">
           {/* At-risk alerts */}
-          <section className="bg-white border rounded-xl p-5">
+          <section className="card p-5">
             <h2 className="font-semibold mb-3">
               🚨 At-risk students ({overview.alerts?.length || 0})
             </h2>
             {(!overview.alerts || overview.alerts.length === 0) && (
-              <p className="text-slate-400 text-sm">No alerts right now.</p>
+              <p className="muted text-sm">No alerts right now.</p>
             )}
             <div className="space-y-2">
               {(overview.alerts || []).map((a) => (
                 <div
                   key={a.id}
-                  className="flex items-start justify-between border rounded-lg p-3"
+                  className="flex items-start justify-between rounded-xl border border-neon-rose/20 bg-neon-rose/5 p-3"
                 >
                   <div>
-                    <p className="text-sm font-medium">
+                    <p className="text-sm font-medium text-neon-rose">
                       Risk {a.risk_score}/100 · {a.alert_type}
                     </p>
-                    <p className="text-sm text-slate-600">{a.message}</p>
-                    <p className="text-xs text-slate-400 mt-1">{a.suggested_action}</p>
+                    <p className="text-sm text-slate-300">{a.message}</p>
+                    <p className="text-xs muted mt-1">{a.suggested_action}</p>
                   </div>
                   <button
                     onClick={() => markRead(a.id)}
-                    className="text-xs text-brand hover:underline whitespace-nowrap ml-3"
+                    className="text-xs text-neon-violet hover:underline whitespace-nowrap ml-3"
                   >
                     Mark read
                   </button>
@@ -75,10 +75,10 @@ export default function TeacherDashboard() {
           </section>
 
           {/* Class concept heatmap */}
-          <section className="bg-white border rounded-xl p-5">
+          <section className="card p-5">
             <h2 className="font-semibold mb-3">Class concept heatmap</h2>
             {(!overview.heatmap || overview.heatmap.length === 0) ? (
-              <p className="text-slate-400 text-sm">No data yet.</p>
+              <p className="muted text-sm">No data yet.</p>
             ) : (
               <div className="flex flex-wrap gap-2">
                 {overview.heatmap.map((c, i) => (
@@ -95,15 +95,15 @@ export default function TeacherDashboard() {
           </section>
 
           {/* Top doubts */}
-          <section className="bg-white border rounded-xl p-5">
+          <section className="card p-5">
             <h2 className="font-semibold mb-3">Most asked doubts this week</h2>
             {(!overview.top_doubts || overview.top_doubts.length === 0) ? (
-              <p className="text-slate-400 text-sm">No doubts logged yet.</p>
+              <p className="muted text-sm">No doubts logged yet.</p>
             ) : (
-              <ul className="list-disc pl-5 space-y-1 text-sm text-slate-700">
+              <ul className="list-disc pl-5 space-y-1 text-sm text-slate-300">
                 {overview.top_doubts.map((d, i) => (
                   <li key={i}>
-                    {d.question} <span className="text-slate-400">({d.count}×)</span>
+                    {d.question} <span className="muted">({d.count}×)</span>
                   </li>
                 ))}
               </ul>

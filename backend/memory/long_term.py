@@ -1,53 +1,66 @@
-"""Long-term memory — Mem0 backed by Supabase pgvector.
+"""Long-term memory — student learning patterns across all sessions.
 
-Stores student patterns across all sessions permanently. Internal LLM is Groq and
-the embedder is the local all-MiniLM-L6-v2 model — no paid OpenAI, no Ollama.
-
-Every function fails soft: if Mem0 is misconfigured or unreachable the agent keeps
-working with an empty memory string instead of crashing.
+Specced on Mem0, but mem0ai 0.1.0 is broken (pgvector schema, missing Qdrant
+index, internal validation bugs), so this delivers the same capability directly
+on Qdrant + the local all-MiniLM-L6-v2 embedder: semantic recall of a student's
+past doubts/notes. All free — no paid OpenAI, no Ollama. Every function fails
+soft so the agents keep working even if Qdrant is unreachable.
 """
 
-import os
+import uuid
 from functools import lru_cache
 
-# Cache models locally on HF Spaces /tmp (matches Dockerfile)
-os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/sentence_transformers")
-
-
-def _build_config() -> dict:
-    """Mem0 config: pgvector store (Supabase) + Groq LLM + local MiniLM embedder."""
-    return {
-        "vector_store": {
-            "provider": "pgvector",
-            "config": {
-                "connection_string": os.getenv("SUPABASE_DB_URL"),
-                "collection_name": "mem0_memories",
-            },
-        },
-        "llm": {
-            "provider": "groq",
-            "config": {
-                "model": "llama-3.3-70b-versatile",
-                "api_key": os.getenv("GROQ_API_KEY"),
-                "temperature": 0.1,
-            },
-        },
-        "embedder": {
-            "provider": "huggingface",
-            "config": {"model": "all-MiniLM-L6-v2"},
-        },
-    }
+COLLECTION = "longterm_memories"
+VECTOR_SIZE = 384
 
 
 @lru_cache(maxsize=1)
-def get_memory_client():
-    """Lazily build a single Mem0 client. Returns None if unavailable."""
+def _ensure_collection():
+    """Create the memories collection + student_id index once. Returns client or None."""
     try:
-        from mem0 import Memory
-        return Memory.from_config(_build_config())
-    except Exception as e:  # missing deps, bad config, unreachable DB
-        print(f"[long_term] Mem0 unavailable, running without long-term memory: {e}")
+        from rag.qdrant_client import client
+        from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
+
+        names = {c.name for c in client.get_collections().collections}
+        if COLLECTION not in names:
+            client.create_collection(
+                collection_name=COLLECTION,
+                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+            )
+        # Filtering memories by student requires a keyword index on student_id.
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION,
+                field_name="student_id",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # index already exists
+        return client
+    except Exception as e:
+        print(f"[long_term] Qdrant memory unavailable, running without it: {e}")
         return None
+
+
+def add_memory(student_id: str, user_text: str, assistant_text: str = "") -> bool:
+    """Persist a conversation turn as long-term memory. Returns True on success."""
+    client = _ensure_collection()
+    if client is None or not user_text:
+        return False
+    try:
+        from rag.embedder import embed
+        from qdrant_client.models import PointStruct
+
+        memory = user_text if not assistant_text else f"{user_text}\n{assistant_text}"
+        client.upsert(collection_name=COLLECTION, points=[PointStruct(
+            id=str(uuid.uuid4()),
+            vector=embed(user_text),
+            payload={"student_id": student_id, "memory": memory},
+        )])
+        return True
+    except Exception as e:
+        print(f"[long_term] add failed: {e}")
+        return False
 
 
 def get_memories(student_id: str, query: str, limit: int = 5) -> str:
@@ -55,33 +68,23 @@ def get_memories(student_id: str, query: str, limit: int = 5) -> str:
 
     Safe to call inside any agent node — returns "" on any failure.
     """
-    client = get_memory_client()
-    if client is None:
+    client = _ensure_collection()
+    if client is None or not query:
         return ""
     try:
-        result = client.search(query=query, user_id=student_id, limit=limit)
-        items = result.get("results", result) if isinstance(result, dict) else result
-        memories = [
-            (m.get("memory") or m.get("text") or "")
-            for m in (items or [])
-        ]
-        return "\n".join([m for m in memories if m])
+        from rag.embedder import embed
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        hits = client.search(
+            collection_name=COLLECTION,
+            query_vector=embed(query),
+            query_filter=Filter(must=[
+                FieldCondition(key="student_id", match=MatchValue(value=student_id))
+            ]),
+            limit=limit,
+            with_payload=True,
+        )
+        return "\n".join(h.payload.get("memory", "") for h in hits if h.payload)
     except Exception as e:
         print(f"[long_term] search failed: {e}")
         return ""
-
-
-def add_memory(student_id: str, user_text: str, assistant_text: str = "") -> bool:
-    """Persist a conversation turn as long-term memory. Returns True on success."""
-    client = get_memory_client()
-    if client is None:
-        return False
-    try:
-        messages = [{"role": "user", "content": user_text}]
-        if assistant_text:
-            messages.append({"role": "assistant", "content": assistant_text})
-        client.add(messages, user_id=student_id)
-        return True
-    except Exception as e:
-        print(f"[long_term] add failed: {e}")
-        return False

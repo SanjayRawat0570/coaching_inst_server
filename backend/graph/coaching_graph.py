@@ -3,14 +3,13 @@
 Routes on state['action_type']:
   doubt     -> doubt_node -> END
   test      -> test_generator -> reviewer (loop up to 3x) -> HITL interrupt -> END
-  evaluate  -> evaluator -> progress -> rank -> flashcard -> END
+  evaluate  -> evaluator -> { progress ∥ rank ∥ flashcard } -> aggregator -> END
   rank      -> rank_predictor -> END
 
-Note on the post-test fan-out: the spec describes these as parallel edges. LangGraph
-parallel branches need per-key reducers to avoid concurrent-write conflicts (every
-node here returns the full state dict). To stay correct out of the box they run
-sequentially — functionally identical. Switch to fan-out + reducers later if latency
-matters.
+Post-test fan-out runs the three agents in PARALLEL (per the spec). LangGraph forbids
+two concurrent branches writing the same state key without a reducer, so each branch
+node below returns only its own DISJOINT delta keys (progress->weakness_update,
+rank->air_rank/score, flashcard->side-effects only). The aggregator is the join point.
 """
 
 from langgraph.graph import StateGraph, END
@@ -32,9 +31,40 @@ def hitl_node(state: CoachingState) -> CoachingState:
     The teacher's decision is supplied when the run is resumed (update_state):
       {"approved": bool, "edited_questions": [...]}
     """
-    decision = state.get("review_feedback")  # placeholder; real decision via resume
-    # When resumed, the caller writes 'test_questions' / approval into state directly.
     return {**state, "review_passed": True}
+
+
+# ── Parallel post-test branches (return DISJOINT keys only) ───────────────────
+def progress_branch(state: CoachingState) -> dict:
+    out = progress_tracker_node(state)
+    return {"weakness_update": out.get("weakness_update")}
+
+
+def rank_branch(state: CoachingState) -> dict:
+    out = rank_predictor_node(state)
+    return {"air_rank": out.get("air_rank"), "score": out.get("score")}
+
+
+def flashcard_branch(state: CoachingState) -> dict:
+    flashcard_gen_node(state)  # side effects only (creates flashcards in DB)
+    # langgraph requires every node to write at least one channel; use a disjoint
+    # key so this parallel branch never collides with progress/rank.
+    return {"flashcards_generated": True}
+
+
+def aggregator_node(state: CoachingState) -> CoachingState:
+    """Join point after the parallel branches complete."""
+    return state
+
+
+# Fan-out targets after evaluation. Returning a LIST from a conditional edge is the
+# langgraph 0.1.x way to run several nodes in parallel (multiple static add_edge()
+# calls from one node are rejected in this version).
+POST_TEST_BRANCHES = ["progress", "rank", "flashcard"]
+
+
+def fan_out_post_test(state: CoachingState) -> list[str]:
+    return POST_TEST_BRANCHES
 
 
 def route_action(state: CoachingState) -> str:
@@ -50,9 +80,10 @@ def build_graph(checkpointer=None):
     builder.add_node("reviewer", reviewer_node)
     builder.add_node("hitl", hitl_node)
     builder.add_node("evaluator", evaluator_node)
-    builder.add_node("progress", progress_tracker_node)
-    builder.add_node("rank", rank_predictor_node)
-    builder.add_node("flashcard", flashcard_gen_node)
+    builder.add_node("progress", progress_branch)
+    builder.add_node("rank", rank_branch)
+    builder.add_node("flashcard", flashcard_branch)
+    builder.add_node("aggregator", aggregator_node)
     builder.add_node("rank_solo", rank_predictor_node)
 
     builder.set_conditional_entry_point(
@@ -77,11 +108,12 @@ def build_graph(checkpointer=None):
     )
     builder.add_edge("hitl", END)
 
-    # Evaluate flow: evaluator -> progress -> rank -> flashcard -> END
-    builder.add_edge("evaluator", "progress")
-    builder.add_edge("progress", "rank")
-    builder.add_edge("rank", "flashcard")
-    builder.add_edge("flashcard", END)
+    # Evaluate flow: evaluator fans out to 3 PARALLEL agents, then joins at aggregator
+    builder.add_conditional_edges("evaluator", fan_out_post_test, POST_TEST_BRANCHES)
+    builder.add_edge("progress", "aggregator")
+    builder.add_edge("rank", "aggregator")
+    builder.add_edge("flashcard", "aggregator")
+    builder.add_edge("aggregator", END)
 
     # Standalone rank
     builder.add_edge("rank_solo", END)
@@ -100,7 +132,7 @@ _GRAPH = None
 def get_graph(checkpointer=None):
     """Cached master graph (no checkpointer) for stateless calls like doubts.
 
-    Pass a checkpointer explicitly when you need HITL interrupt/resume for tests.
+    Pass a checkpointer explicitly when you need HITL interrupt/resume or time-travel.
     """
     global _GRAPH
     if checkpointer is not None:

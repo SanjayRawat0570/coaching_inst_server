@@ -46,15 +46,21 @@ def test_generator_node(state: CoachingState, num_questions: int = 10) -> Coachi
         concept_names = [w["concept"] for w in weak if w.get("concept")]
         focus = ", ".join(concept_names) if concept_names else (subject or "the syllabus")
 
-        # Retrieve relevant past-year questions / reference material for grounding
-        pyq_context = "\n\n".join(
-            full_rag_pipeline(
-                question=f"Previous year questions on {focus}",
-                subject=subject,
-                institute_id=state.get("institute_id"),
-                student_level=state.get("student_level") or "intermediate",
+        # Retrieve relevant past-year questions / reference material for grounding.
+        # RAG is optional context — a retrieval failure must not abort generation
+        # (the LLM falls back to its own syllabus knowledge below).
+        try:
+            pyq_context = "\n\n".join(
+                full_rag_pipeline(
+                    question=f"Previous year questions on {focus}",
+                    subject=subject,
+                    institute_id=state.get("institute_id"),
+                    student_level=state.get("student_level") or "intermediate",
+                )
             )
-        )
+        except Exception as e:
+            print(f"[test_generator] RAG retrieval failed, generating without context: {e}")
+            pyq_context = ""
 
         feedback = state.get("review_feedback") or ""
         retry_note = (

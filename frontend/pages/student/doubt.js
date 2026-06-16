@@ -93,7 +93,7 @@ export default function DoubtPage() {
     <Shell requireRole="student" title="Ask a Doubt">
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <select
-          className="border rounded-lg px-3 py-2 bg-white"
+          className="input max-w-[200px]"
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
         >
@@ -101,7 +101,7 @@ export default function DoubtPage() {
             <option key={s}>{s}</option>
           ))}
         </select>
-        <label className="flex items-center gap-2 text-sm text-slate-600">
+        <label className="flex items-center gap-2 text-sm muted">
           <input
             type="checkbox"
             checked={socratic}
@@ -111,9 +111,9 @@ export default function DoubtPage() {
         </label>
       </div>
 
-      <div className="bg-white border rounded-xl h-[55vh] overflow-y-auto p-4 space-y-3">
+      <div className="card h-[55vh] overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && (
-          <p className="text-slate-400 text-center mt-20">
+          <p className="muted text-center mt-20">
             Ask anything — type, speak (🎙 Hindi), or upload a photo of a question.
           </p>
         )}
@@ -122,7 +122,7 @@ export default function DoubtPage() {
             <div
               className={
                 "inline-block px-4 py-2 rounded-2xl max-w-[80%] whitespace-pre-wrap " +
-                (m.role === "user" ? "bg-brand text-white" : "bg-slate-100")
+                (m.role === "user" ? "bg-brand-grad text-white shadow-glow" : "bg-ink-700 text-slate-100")
               }
             >
               {m.content || (streaming ? "…" : "")}
@@ -131,16 +131,16 @@ export default function DoubtPage() {
         ))}
       </div>
 
-      {status && <p className="text-xs text-slate-400 mt-2">{status}</p>}
-      {image && <p className="text-xs text-green-600 mt-2">📷 Image attached</p>}
+      {status && <p className="text-xs muted mt-2">{status}</p>}
+      {image && <p className="text-xs text-emerald-300 mt-2">📷 Image attached</p>}
 
       <div className="flex items-center gap-2 mt-3">
-        <button onClick={startVoice} className="px-3 py-2 border rounded-lg" title="Hindi voice">
+        <button onClick={startVoice} className="btn-ghost" title="Hindi voice">
           🎙
         </button>
         <button
           onClick={() => fileRef.current?.click()}
-          className="px-3 py-2 border rounded-lg"
+          className="btn-ghost"
           title="Upload question photo"
         >
           📷
@@ -153,7 +153,7 @@ export default function DoubtPage() {
           onChange={onPickImage}
         />
         <input
-          className="flex-1 border rounded-lg px-3 py-2"
+          className="input flex-1"
           placeholder="Type your doubt…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -162,7 +162,7 @@ export default function DoubtPage() {
         <button
           onClick={send}
           disabled={streaming}
-          className="bg-brand hover:bg-brand-dark text-white px-5 py-2 rounded-lg disabled:opacity-60"
+          className="btn-primary px-5"
         >
           Send
         </button>

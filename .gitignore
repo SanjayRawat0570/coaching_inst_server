@@ -2,12 +2,18 @@
 .env
 *.env
 !.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv311/
 venv/
 env/
 
@@ -32,3 +38,4 @@ backend/data/nta_cutoffs/
 Thumbs.db
 .vscode/
 .idea/
+.env

@@ -22,6 +22,7 @@ class CoachingState(TypedDict):
     test_id:               Optional[str]
     evaluation_result:     Optional[dict]
     weakness_update:       Optional[dict]
+    flashcards_generated:  Optional[bool]      # disjoint key for the parallel flashcard branch
     air_rank:              Optional[str]
     score:                 Optional[float]
     review_passed:         Optional[bool]
