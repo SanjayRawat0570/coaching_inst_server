@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  darkMode: "class",
   content: ["./pages/**/*.{js,jsx}", "./components/**/*.{js,jsx}"],
   // Colors applied dynamically (text-${color}/bg-${color}) need safelisting so
   // the JIT generates them even though they're not literal strings in the source.

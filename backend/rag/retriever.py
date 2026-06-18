@@ -89,12 +89,14 @@ def crag_check(chunks: list, question: str) -> tuple[list, bool]:
 
 # ── Pattern 5: Web fallback ───────────────────────────────────────────────────
 def web_search_fallback(query: str) -> list:
-    from langchain_community.tools.tavily_search import TavilySearchResults
     try:
+        from langchain_community.tools.tavily_search import TavilySearchResults
         tool = TavilySearchResults(max_results=3, api_key=os.getenv("TAVILY_API_KEY"))
         results = tool.invoke(query)
     except Exception as e:
-        print(f"[retriever] web fallback failed: {e}")
+        # Includes ImportError when langchain_community is missing/incompatible —
+        # web search is an optional fallback, so degrade to RAG-only.
+        print(f"[retriever] web fallback unavailable: {e}")
         return []
     # Tavily may return a list of result dicts, or (on error/quota) a bare string.
     if not isinstance(results, list):

@@ -18,6 +18,7 @@ CREATE TABLE students (
   name         TEXT NOT NULL,
   email        TEXT UNIQUE,
   phone        TEXT,
+  parent_email TEXT,           -- parent's email, entered at student signup; links child → parent account
   parent_phone TEXT,
   institute_id UUID REFERENCES institutes(id),
   target_exam  TEXT,
@@ -157,6 +158,7 @@ CREATE INDEX ON weakness_map (student_id, score);
 CREATE INDEX ON alerts (institute_id, is_read, created_at);
 CREATE INDEX ON flashcards (student_id, next_review);
 CREATE INDEX ON doubt_logs (student_id, created_at);
+CREATE INDEX ON students (parent_email);
 
 -- Row Level Security
 ALTER TABLE students        ENABLE ROW LEVEL SECURITY;
@@ -169,6 +171,11 @@ ALTER TABLE parent_reports  ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "student_own" ON students
   FOR ALL USING (auth_id = auth.uid());
 
+-- A parent can read the children linked to their email.
+-- auth.email() = the logged-in user's email; matches students.parent_email.
+CREATE POLICY "parent_read_children" ON students
+  FOR SELECT USING (parent_email = auth.email());
+
 CREATE POLICY "student_own_weakness" ON weakness_map
   FOR ALL USING (student_id IN (SELECT id FROM students WHERE auth_id = auth.uid()));
 
@@ -180,3 +187,9 @@ CREATE POLICY "student_own_tests" ON tests
 
 CREATE POLICY "student_own_flashcards" ON flashcards
   FOR ALL USING (student_id IN (SELECT id FROM students WHERE auth_id = auth.uid()));
+
+-- ── Migration (run if the students table already exists) ──────────────────────
+-- ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_email TEXT;
+-- CREATE INDEX IF NOT EXISTS students_parent_email_idx ON students (parent_email);
+-- CREATE POLICY "parent_read_children" ON students
+--   FOR SELECT USING (parent_email = auth.email());

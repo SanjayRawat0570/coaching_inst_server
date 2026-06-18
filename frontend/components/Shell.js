@@ -1,6 +1,8 @@
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useAuth } from "../lib/useAuth";
+import ThemeToggle from "./ThemeToggle";
 
 const NAV = {
   student: [
@@ -26,11 +28,12 @@ const ROLE_BADGE = {
 export default function Shell({ requireRole, title, subtitle, actions, children }) {
   const { user, role, loading, logout } = useAuth({ requireRole });
   const router = useRouter();
+  const [open, setOpen] = useState(false); // mobile drawer
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="flex items-center gap-3 text-slate-400">
+        <div className="flex items-center gap-3 muted">
           <span className="h-4 w-4 rounded-full bg-brand animate-pulse-glow" />
           Loading…
         </div>
@@ -39,66 +42,89 @@ export default function Shell({ requireRole, title, subtitle, actions, children 
   }
   if (!user) return null; // useAuth redirects to "/"
 
-  const links = [...(NAV[role] || []), { href: "/architecture", label: "Architecture", icon: "🧠" }];
+  const links = NAV[role] || [];
+  const name = user.user_metadata?.name || user.email;
+
+  const NavLink = ({ href, label, icon }) => {
+    const active = router.pathname === href;
+    return (
+      <Link
+        href={href}
+        onClick={() => setOpen(false)}
+        className={
+          "flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition " +
+          (active
+            ? "bg-brand/10 text-brand dark:bg-white/10 dark:text-white font-medium shadow-glow"
+            : "text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white")
+        }
+      >
+        <span className="text-base opacity-90">{icon}</span>
+        {label}
+      </Link>
+    );
+  };
 
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-ink-950/80 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-6 min-w-0">
-            <Link href="/" className="flex items-center gap-2 shrink-0">
-              <span className="grid place-items-center h-8 w-8 rounded-xl bg-brand-grad text-white text-sm shadow-glow">
-                🎓
-              </span>
-              <span className="font-bold tracking-tight hidden sm:block">
-                Smart<span className="grad-text">Coaching</span>
-              </span>
-            </Link>
-            <nav className="flex items-center gap-1 overflow-x-auto">
-              {links.map((l) => {
-                const active = router.pathname === l.href;
-                return (
-                  <Link
-                    key={l.href}
-                    href={l.href}
-                    className={
-                      "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm whitespace-nowrap transition " +
-                      (active
-                        ? "bg-white/10 text-white shadow-glow"
-                        : "text-slate-400 hover:text-white hover:bg-white/5")
-                    }
-                  >
-                    <span className="opacity-80">{l.icon}</span>
-                    {l.label}
-                  </Link>
-                );
-              })}
-            </nav>
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
-            {role && <span className={ROLE_BADGE[role] || "badge-brand"}>{role}</span>}
-            <span className="text-sm text-slate-400 hidden md:block">
-              {user.user_metadata?.name || user.email}
-            </span>
-            <button onClick={logout} className="text-sm text-slate-400 hover:text-neon-rose transition">
-              Logout
-            </button>
-          </div>
+    <div className="min-h-screen lg:flex">
+      {/* Sidebar */}
+      <aside
+        className={
+          "fixed top-0 left-0 z-40 h-screen w-64 flex flex-col border-r border-slate-200 bg-white " +
+          "dark:border-white/10 dark:bg-ink-900/85 backdrop-blur-xl transition-transform lg:sticky lg:translate-x-0 " +
+          (open ? "translate-x-0" : "-translate-x-full")
+        }
+      >
+        <div className="h-16 flex items-center gap-2 px-5 border-b border-slate-200 dark:border-white/10">
+          <span className="grid place-items-center h-8 w-8 rounded-xl bg-brand-grad text-white text-sm shadow-glow">🎓</span>
+          <span className="font-bold tracking-tight">
+            Smart<span className="grad-text">Coaching</span>
+          </span>
         </div>
-      </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
-        {(title || actions) && (
-          <div className="flex items-end justify-between gap-4 mb-6">
-            <div>
-              {title && <h1 className="text-2xl font-bold tracking-tight">{title}</h1>}
-              {subtitle && <p className="muted text-sm mt-1">{subtitle}</p>}
+        <nav className="flex-1 overflow-y-auto p-3 space-y-1">
+          <p className="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-widest muted">Menu</p>
+          {links.map((l) => <NavLink key={l.href} {...l} />)}
+          <p className="px-3 pt-5 pb-1 text-[11px] font-semibold uppercase tracking-widest muted">System</p>
+          <NavLink href="/architecture" label="Architecture" icon="🧠" />
+        </nav>
+
+        <div className="p-3 border-t border-slate-200 dark:border-white/10">
+          <div className="panel p-3 flex items-center gap-3">
+            <span className="grid place-items-center h-9 w-9 rounded-lg bg-brand-grad text-white text-sm shrink-0">
+              {String(name).charAt(0).toUpperCase()}
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{name}</p>
+              {role && <span className={ROLE_BADGE[role] || "badge-brand"}>{role}</span>}
             </div>
-            {actions}
           </div>
-        )}
-        {children}
-      </main>
+          <button onClick={logout} className="btn-ghost w-full mt-2 text-rose-600 dark:text-neon-rose">
+            Logout
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile overlay */}
+      {open && (
+        <div onClick={() => setOpen(false)} className="fixed inset-0 z-30 bg-black/50 lg:hidden" />
+      )}
+
+      {/* Main column */}
+      <div className="flex-1 min-w-0">
+        <header className="sticky top-0 z-20 h-16 flex items-center gap-3 border-b border-slate-200 bg-white/80 dark:border-white/10 dark:bg-ink-950/70 backdrop-blur-xl px-4 sm:px-6">
+          <button onClick={() => setOpen(true)} className="btn-ghost px-2 lg:hidden" aria-label="Open menu">☰</button>
+          <div className="flex-1 min-w-0">
+            {title && <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">{title}</h1>}
+            {subtitle && <p className="muted text-xs truncate hidden sm:block">{subtitle}</p>}
+          </div>
+          {actions}
+          <ThemeToggle />
+        </header>
+
+        <main className="px-4 sm:px-6 lg:px-8 py-6 w-full max-w-[1500px] mx-auto">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

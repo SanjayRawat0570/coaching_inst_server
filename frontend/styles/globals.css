@@ -2,18 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+}
+
 html,
 body {
   padding: 0;
   margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Light (default) ── */
+body {
+  color: #0f172a;
+  background-color: #f6f8fc;
+  background-image:
+    radial-gradient(900px 500px at 12% -8%, rgba(124, 92, 255, 0.10), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(34, 211, 238, 0.08), transparent 55%);
+  background-attachment: fixed;
+}
+
+/* ── Dark ── */
+html.dark body {
   color: #e2e8f0;
   background-color: #070b18;
   background-image:
     radial-gradient(900px 500px at 12% -8%, rgba(124, 92, 255, 0.18), transparent 60%),
     radial-gradient(900px 500px at 100% 0%, rgba(34, 211, 238, 0.12), transparent 55%);
-  background-attachment: fixed;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -21,9 +38,12 @@ a {
   text-decoration: none;
 }
 
-/* Custom scrollbar for the dark theme */
+/* Scrollbar */
 * {
   scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+html.dark * {
   scrollbar-color: #26324f transparent;
 }
 *::-webkit-scrollbar {
@@ -31,58 +51,103 @@ a {
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #1a2540;
+  background: #cbd5e1;
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
+html.dark *::-webkit-scrollbar-thumb {
+  background: #1a2540;
+  background-clip: content-box;
+}
 
 @layer components {
-  /* Surface card */
+  /* Surfaces */
   .card {
-    @apply rounded-2xl border border-white/10 bg-ink-800/70 backdrop-blur-sm shadow-card;
+    @apply rounded-2xl border bg-white border-slate-200 shadow-sm
+           dark:bg-ink-800/70 dark:border-white/10 dark:backdrop-blur-sm dark:shadow-card;
   }
   .card-hover {
-    @apply transition hover:border-brand/40 hover:shadow-glow;
+    @apply transition hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-glow;
   }
+  /* Inner sub-surface (nested panels, bubbles, list rows) */
+  .panel {
+    @apply rounded-xl border bg-slate-50 border-slate-200
+           dark:bg-ink-900/50 dark:border-white/10;
+  }
+  .hairline { @apply border-slate-200 dark:border-white/10; }
 
   /* Buttons */
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
   }
-  .btn-primary {
-    @apply btn text-white bg-brand-grad shadow-glow hover:brightness-110;
-  }
+  .btn-primary { @apply btn text-white bg-brand-grad shadow-glow hover:brightness-110; }
   .btn-ghost {
-    @apply btn border border-white/10 text-slate-200 hover:bg-white/5;
+    @apply btn border border-slate-300 text-slate-700 hover:bg-slate-100
+           dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5;
   }
-  .btn-danger {
-    @apply btn border border-neon-rose/30 text-neon-rose hover:bg-neon-rose/10;
-  }
-  .btn-success {
-    @apply btn text-white bg-emerald-500/90 hover:bg-emerald-500;
-  }
+  .btn-danger { @apply btn border border-rose-300 text-rose-600 hover:bg-rose-50
+                       dark:border-neon-rose/30 dark:text-neon-rose dark:hover:bg-neon-rose/10; }
+  .btn-success { @apply btn text-white bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-500/90; }
 
   /* Inputs */
   .input {
-    @apply w-full rounded-xl border border-white/10 bg-ink-900/80 px-3 py-2 text-slate-100 placeholder-slate-500 outline-none transition focus:border-brand/60 focus:ring-2 focus:ring-brand/30;
+    @apply w-full rounded-xl border bg-white border-slate-300 px-3 py-2 text-slate-900 placeholder-slate-400 outline-none transition
+           focus:border-brand/60 focus:ring-2 focus:ring-brand/20
+           dark:bg-ink-900/80 dark:border-white/10 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:ring-brand/30;
   }
 
   /* Pills / badges */
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
-  .badge-brand { @apply badge bg-brand/15 text-neon-violet border border-brand/30; }
-  .badge-cyan  { @apply badge bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/30; }
-  .badge-green { @apply badge bg-emerald-500/10 text-emerald-300 border border-emerald-500/30; }
-  .badge-amber { @apply badge bg-amber-400/10 text-amber-300 border border-amber-400/30; }
+  .badge-brand { @apply badge bg-brand/10 text-brand border border-brand/30 dark:bg-brand/15 dark:text-neon-violet; }
+  .badge-cyan  { @apply badge bg-cyan-500/10 text-cyan-600 border border-cyan-500/30 dark:bg-neon-cyan/10 dark:text-neon-cyan dark:border-neon-cyan/30; }
+  .badge-green { @apply badge bg-emerald-500/10 text-emerald-600 border border-emerald-500/30 dark:text-emerald-300; }
+  .badge-amber { @apply badge bg-amber-500/10 text-amber-600 border border-amber-500/30 dark:text-amber-300; }
 
-  /* Section heading */
-  .h-section { @apply text-sm font-semibold tracking-wide text-slate-200; }
-  .muted { @apply text-slate-400; }
+  /* Text helpers */
+  .h-section { @apply text-sm font-semibold tracking-wide text-slate-700 dark:text-slate-200; }
+  .muted { @apply text-slate-500 dark:text-slate-400; }
+  .grad-text { @apply bg-brand-grad bg-clip-text text-transparent; }
 
-  /* Gradient text */
-  .grad-text {
-    @apply bg-brand-grad bg-clip-text text-transparent;
+  /* Stat tile — label, big value, optional trend */
+  .stat-value { @apply text-3xl font-extrabold tracking-tight tabular-nums; }
+  .stat-label { @apply text-xs font-medium uppercase tracking-wider muted; }
+
+  /* Skeleton shimmer for loading states */
+  .skeleton {
+    @apply rounded-lg bg-slate-200/70 dark:bg-white/5;
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.45) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  html.dark .skeleton {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.06) 50%,
+      transparent 100%
+    );
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Empty-state wrapper */
+@layer components {
+  .empty-state {
+    @apply flex flex-col items-center justify-center text-center py-14 px-6;
+  }
+  .empty-state .icon {
+    @apply grid place-items-center h-14 w-14 rounded-2xl bg-brand-soft text-2xl mb-4 shadow-glow;
   }
 }

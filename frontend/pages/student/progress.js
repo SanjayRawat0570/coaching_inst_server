@@ -9,6 +9,7 @@ import {
   Cell,
 } from "recharts";
 import Shell from "../../components/Shell";
+import { EmptyState, Stat, SkeletonCard } from "../../components/ui";
 import { api } from "../../lib/api";
 
 function scoreColor(score) {
@@ -22,6 +23,9 @@ export default function ProgressPage() {
   const [cards, setCards] = useState([]);
   const [revealed, setRevealed] = useState({});
   const [loading, setLoading] = useState(true);
+  const [examEdit, setExamEdit] = useState(false);
+  const [examInput, setExamInput] = useState("");
+  const [savingExam, setSavingExam] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -48,6 +52,20 @@ export default function ProgressPage() {
     setCards((c) => c.filter((x) => x.id !== cardId));
   }
 
+  async function saveExam() {
+    setSavingExam(true);
+    try {
+      const exam = examInput.trim();
+      await api("/profile", { method: "POST", body: { target_exam: exam } });
+      setData((d) => ({ ...d, profile: { ...d.profile, target_exam: exam || null } }));
+      setExamEdit(false);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSavingExam(false);
+    }
+  }
+
   const chart = (data.weakness_map || []).map((w) => ({
     name: w.concept,
     score: Math.round((w.score || 0) * 100),
@@ -55,32 +73,75 @@ export default function ProgressPage() {
   }));
 
   return (
-    <Shell requireRole="student" title="My Progress">
+    <Shell
+      requireRole="student"
+      title="My Progress"
+      subtitle="Track your streak, mastery, and what to revise next"
+    >
       {loading ? (
-        <p className="text-slate-400">Loading…</p>
+        <div className="grid md:grid-cols-3 gap-4">
+          <SkeletonCard lines={1} />
+          <SkeletonCard lines={1} />
+          <SkeletonCard lines={1} />
+          <div className="md:col-span-3">
+            <SkeletonCard lines={5} />
+          </div>
+        </div>
       ) : (
         <div className="grid md:grid-cols-3 gap-4">
           {/* Stat cards */}
-          <div className="card p-5">
-            <p className="text-sm muted">🔥 Streak</p>
-            <p className="text-3xl font-bold grad-text">{data.profile?.streak_days ?? 0} days</p>
-          </div>
-          <div className="card p-5">
-            <p className="text-sm muted">⭐ XP</p>
-            <p className="text-3xl font-bold grad-text">{data.profile?.xp_points ?? 0}</p>
-          </div>
-          <div className="card p-5">
-            <p className="text-sm muted">🎯 Target</p>
-            <p className="text-3xl font-bold">{data.profile?.target_exam || "—"}</p>
+          <Stat icon="🔥" label="Day streak" value={`${data.profile?.streak_days ?? 0}`} sub="Keep it alive — study daily" />
+          <Stat icon="⭐" label="XP points" value={data.profile?.xp_points ?? 0} />
+          {/* Target exam — editable */}
+          <div className="card card-hover p-5">
+            <span className="text-xl">🎯</span>
+            {examEdit ? (
+              <div className="mt-2 flex flex-col gap-2">
+                <input
+                  className="input"
+                  placeholder="e.g. JEE Advanced, NEET"
+                  value={examInput}
+                  onChange={(e) => setExamInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && saveExam()}
+                  autoFocus
+                />
+                <div className="flex gap-2">
+                  <button className="btn-primary flex-1 py-1 text-sm" onClick={saveExam} disabled={savingExam}>
+                    {savingExam ? "Saving…" : "Save"}
+                  </button>
+                  <button className="btn-ghost flex-1 py-1 text-sm" onClick={() => setExamEdit(false)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="stat-value mt-2 text-slate-900 dark:text-white">
+                  {data.profile?.target_exam || "—"}
+                </p>
+                <p className="stat-label mt-1">Target exam</p>
+                <button
+                  className="text-neon-violet text-xs mt-1 hover:underline"
+                  onClick={() => {
+                    setExamInput(data.profile?.target_exam || "");
+                    setExamEdit(true);
+                  }}
+                >
+                  {data.profile?.target_exam ? "Change" : "Set target exam"}
+                </button>
+              </>
+            )}
           </div>
 
           {/* Weakness chart */}
           <div className="card p-5 md:col-span-3">
-            <h2 className="font-semibold mb-3">Concept mastery (%)</h2>
+            <h2 className="h-section mb-3">Concept mastery (%)</h2>
             {chart.length === 0 ? (
-              <p className="muted text-sm">
-                Take a test to start building your weakness map.
-              </p>
+              <EmptyState
+                icon="📊"
+                title="No mastery data yet"
+                hint="Take a test and your per-concept weakness map will appear here."
+              />
             ) : (
               <ResponsiveContainer width="100%" height={Math.max(220, chart.length * 34)}>
                 <BarChart data={chart} layout="vertical" margin={{ left: 40 }}>
@@ -102,36 +163,37 @@ export default function ProgressPage() {
 
           {/* Flashcards due */}
           <div className="card p-5 md:col-span-3">
-            <h2 className="font-semibold mb-3">
-              Flashcards due today ({cards.length})
+            <h2 className="h-section mb-3 flex items-center gap-2">
+              Flashcards due today
+              <span className="badge-cyan">{cards.length}</span>
             </h2>
             {cards.length === 0 ? (
-              <p className="muted text-sm">Nothing due — nice work! 🎉</p>
+              <EmptyState icon="🎉" title="All caught up!" hint="No flashcards are due right now — nice work." />
             ) : (
               <div className="grid md:grid-cols-2 gap-3">
                 {cards.map((c) => (
-                  <div key={c.id} className="rounded-xl border border-white/10 bg-ink-900/50 p-4">
+                  <div key={c.id} className="panel p-4">
                     <p className="text-xs muted mb-1">{c.concept}</p>
                     <p className="font-medium">{c.question}</p>
                     {revealed[c.id] ? (
                       <>
-                        <p className="mt-2 text-slate-300">{c.answer}</p>
+                        <p className="mt-2 text-slate-600 dark:text-slate-300">{c.answer}</p>
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => review(c.id, 1)}
-                            className="flex-1 bg-rose-500/15 text-rose-300 border border-rose-500/30 rounded-lg py-1 text-sm hover:bg-rose-500/25"
+                            className="flex-1 bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 rounded-lg py-1 text-sm hover:bg-rose-500/25"
                           >
                             Forgot
                           </button>
                           <button
                             onClick={() => review(c.id, 3)}
-                            className="flex-1 bg-amber-400/15 text-amber-300 border border-amber-400/30 rounded-lg py-1 text-sm hover:bg-amber-400/25"
+                            className="flex-1 bg-amber-400/15 text-amber-600 dark:text-amber-300 border border-amber-400/30 rounded-lg py-1 text-sm hover:bg-amber-400/25"
                           >
                             Hard
                           </button>
                           <button
                             onClick={() => review(c.id, 5)}
-                            className="flex-1 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 rounded-lg py-1 text-sm hover:bg-emerald-500/25"
+                            className="flex-1 bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30 rounded-lg py-1 text-sm hover:bg-emerald-500/25"
                           >
                             Easy
                           </button>

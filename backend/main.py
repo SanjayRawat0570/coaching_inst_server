@@ -5,6 +5,7 @@ Local: uvicorn main:app --reload --port 8000   |   HF Spaces: port 7860 (Dockerf
 """
 
 import os
+import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -96,6 +97,12 @@ class SignupRequest(BaseModel):
     role: str = "student"
     name: str = ""
     institute_id: str | None = None
+    parent_email: str | None = None  # for students: the parent's email used to link the parent account
+
+
+class ProfileUpdateRequest(BaseModel):
+    target_exam: str | None = None
+    exam_date: str | None = None  # ISO date string, e.g. "2027-05-01"
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -115,13 +122,19 @@ def signup(req: SignupRequest):
     """
     sb = get_supabase()
     role = req.role if req.role in ("student", "teacher", "parent", "admin") else "student"
-    institute_id = req.institute_id or None
+    # institute_id maps to a UUID column; keep only valid UUIDs, else store NULL.
+    institute_id = _as_uuid(req.institute_id)
+    # Normalise the parent email (students only) so linking is case/space-insensitive.
+    parent_email = (req.parent_email or "").strip().lower() or None
     try:
         res = sb.auth.admin.create_user({
             "email": req.email,
             "password": req.password,
             "email_confirm": True,
-            "user_metadata": {"role": role, "name": req.name, "institute_id": institute_id},
+            "user_metadata": {
+                "role": role, "name": req.name,
+                "institute_id": institute_id, "parent_email": parent_email,
+            },
         })
     except Exception as e:
         msg = str(e)
@@ -137,6 +150,7 @@ def signup(req: SignupRequest):
                 "name": req.name or req.email,
                 "email": req.email,
                 "institute_id": institute_id,
+                "parent_email": parent_email,
             }, on_conflict="auth_id").execute()
         except Exception as e:
             print(f"[signup] student profile creation failed: {e}")
@@ -166,6 +180,7 @@ def doubt(req: DoubtRequest, background: BackgroundTasks, user=Depends(get_curre
             persist_doubt, student_id, result["question"], result["answer"],
             req.subject, result["sources"], result["confidence"], result["input_type"],
         )
+        background.add_task(_award_activity, student_id, "doubt")
     return result
 
 
@@ -189,6 +204,10 @@ async def doubt_stream(req: DoubtRequest, user=Depends(get_current_user)):
     }
 
     async def generate():
+        import re
+        streamed = False        # did we forward any live tokens?
+        final_answer = ""       # node's full answer, used as a fallback
+        node_error = None       # node-level error captured from state
         try:
             async for event in graph.astream_events(initial, version="v2"):
                 kind = event["event"]
@@ -198,11 +217,38 @@ async def doubt_stream(req: DoubtRequest, user=Depends(get_current_user)):
                 if kind == "on_chat_model_stream" and "final_answer" in event.get("tags", []):
                     chunk = event["data"]["chunk"].content
                     if chunk:
+                        streamed = True
                         yield f"data: {chunk}\n\n"
                 elif kind == "on_chain_start" and event.get("name") == "doubt":
                     yield "data: [STATUS]Searching notes and thinking…\n\n"
+                elif kind == "on_chain_end" and event.get("name") == "doubt":
+                    out = event.get("data", {}).get("output") or {}
+                    if isinstance(out, dict):
+                        final_answer = out.get("agent_output") or ""
+                        node_error = out.get("error")
         except Exception as e:
             yield f"data: [ERROR]{e}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # Fallback: the node ran but no tokens streamed (e.g. the model returned
+        # all at once, or an internal step failed and was caught in state). Send
+        # the final answer so the user never sees an empty bubble.
+        if not streamed:
+            if node_error:
+                # node_error holds the real exception; agent_output is just a placeholder
+                yield f"data: [ERROR]{node_error}\n\n"
+            elif final_answer:
+                # Collapse blank lines so they don't clash with the SSE "\n\n" delimiter.
+                safe = re.sub(r"\n{2,}", "\n", final_answer.replace("\r\n", "\n"))
+                yield f"data: {safe}\n\n"
+            else:
+                yield "data: [ERROR]No answer was generated. Please try again.\n\n"
+
+        # Reward the student only when a real answer went out (not on error).
+        if not node_error and (streamed or final_answer):
+            _award_activity(student_id, "doubt")
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -211,13 +257,32 @@ async def doubt_stream(req: DoubtRequest, user=Depends(get_current_user)):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 @app.post("/test/generate")
 def generate_test(req: GenerateTestRequest, user=Depends(require_role("teacher", "admin"))):
-    """Generate a personalized test (status 'pending' awaiting teacher approval)."""
+    """Generate a personalized test and publish it straight to the student (status 'ready')."""
     from agents.test_generator import test_generator_node
     from agents.reviewer_agent import reviewer_node, should_continue, MAX_ITERATIONS
 
+    sb = get_supabase()
+
+    # student_id must be a real students.id (UUID). Give a clear 400 instead of a
+    # 500 when a teacher pastes something that isn't (e.g. a roll number like "9098").
+    student_uuid = _as_uuid(req.student_id)
+    if not student_uuid:
+        raise HTTPException(
+            status_code=400,
+            detail="Student ID must be the student's UUID (students.id), not a roll number.",
+        )
+    student = (sb.table("students").select("id, institute_id")
+               .eq("id", student_uuid).limit(1).execute()).data
+    if not student:
+        raise HTTPException(status_code=404, detail="No student found with that ID.")
+
+    # Prefer the student's institute; fall back to the one the teacher sent. Empty
+    # strings must become NULL — "" is not valid for a UUID column.
+    institute_uuid = _as_uuid(student[0].get("institute_id")) or _as_uuid(req.institute_id)
+
     state = {
-        "student_id": req.student_id,
-        "institute_id": req.institute_id,
+        "student_id": student_uuid,
+        "institute_id": institute_uuid or "",
         "action_type": "test",
         "subject": req.subject,
         "iteration_count": 0,
@@ -230,14 +295,15 @@ def generate_test(req: GenerateTestRequest, user=Depends(require_role("teacher",
         if should_continue(state) == "approved" or state["iteration_count"] >= MAX_ITERATIONS:
             break
 
-    sb = get_supabase()
+    # Auto-publish: the generated (and AI self-reviewed) test goes straight to the
+    # student as "ready" — no separate teacher approval step.
     row = sb.table("tests").insert({
-        "student_id": req.student_id,
-        "institute_id": req.institute_id,
+        "student_id": student_uuid,
+        "institute_id": institute_uuid,
         "subject": req.subject,
         "questions": state.get("test_questions") or [],
-        "status": "pending",
-        "teacher_approved": False,
+        "status": "ready",
+        "teacher_approved": True,
     }).execute().data
     test_id = row[0]["id"] if row else None
     return {"test_id": test_id, "questions": state.get("test_questions"),
@@ -277,6 +343,7 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
         "iteration_count": 0,
         "conversation_history": [],
     }, config)
+    background.add_task(_award_activity, student_id, "test")
     return {
         "score": result.get("score"),
         "evaluation": result.get("evaluation_result"),
@@ -303,6 +370,20 @@ def progress(user=Depends(get_current_user)):
     return {"weakness_map": weakness, "profile": student[0] if student else {}}
 
 
+@app.post("/profile")
+def update_profile(req: ProfileUpdateRequest, user=Depends(get_current_user)):
+    """Let a student set their target exam (and exam date) shown on the progress page."""
+    student_id = _resolve_student_id(user)
+    update = {}
+    if req.target_exam is not None:
+        update["target_exam"] = req.target_exam.strip() or None
+    if req.exam_date is not None:
+        update["exam_date"] = req.exam_date or None
+    if update:
+        get_supabase().table("students").update(update).eq("id", student_id).execute()
+    return {"ok": True, **update}
+
+
 @app.get("/flashcards/due")
 def flashcards_due(user=Depends(get_current_user)):
     from agents.flashcard_agent import due_cards
@@ -310,9 +391,12 @@ def flashcards_due(user=Depends(get_current_user)):
 
 
 @app.post("/flashcards/review")
-def review_flashcard(req: ReviewCardRequest, user=Depends(get_current_user)):
+def review_flashcard(req: ReviewCardRequest, background: BackgroundTasks,
+                     user=Depends(get_current_user)):
     from agents.flashcard_agent import review_card
-    return review_card(req.card_id, req.quality)
+    result = review_card(req.card_id, req.quality)
+    background.add_task(_award_activity, _resolve_student_id(user), "flashcard")
+    return result
 
 
 # ── Teacher / admin ───────────────────────────────────────────────────────────
@@ -326,14 +410,20 @@ def teacher_alerts(institute_id: str, user=Depends(require_role("teacher", "admi
 
 
 @app.get("/teacher/overview")
-def teacher_overview(institute_id: str, user=Depends(require_role("teacher", "admin"))):
-    """Class heatmap (avg concept mastery) + at-risk alerts + most-asked doubts."""
+def teacher_overview(institute_id: str = "", user=Depends(require_role("teacher", "admin"))):
+    """Class heatmap (avg concept mastery) + at-risk alerts + most-asked doubts.
+
+    Scopes to the teacher's institute when given a valid one; otherwise spans all
+    students (single-institute / demo setups where accounts have no institute).
+    """
     from datetime import datetime, timedelta, timezone
     sb = get_supabase()
+    inst = _as_uuid(institute_id)
 
-    student_ids = [s["id"] for s in (
-        sb.table("students").select("id").eq("institute_id", institute_id).execute().data or []
-    )]
+    students_q = sb.table("students").select("id")
+    if inst:
+        students_q = students_q.eq("institute_id", inst)
+    student_ids = [s["id"] for s in (students_q.execute().data or [])]
 
     # Heatmap: average mastery per concept across the class
     heatmap = []
@@ -348,9 +438,10 @@ def teacher_overview(institute_id: str, user=Depends(require_role("teacher", "ad
             key=lambda x: x["avg_score"],
         )
 
-    alerts = (sb.table("alerts").select("*")
-              .eq("institute_id", institute_id).eq("is_read", False)
-              .order("risk_score", desc=True).execute().data or [])
+    alerts_q = sb.table("alerts").select("*").eq("is_read", False)
+    if inst:
+        alerts_q = alerts_q.eq("institute_id", inst)
+    alerts = (alerts_q.order("risk_score", desc=True).execute().data or [])
 
     # Top doubts this week (simple frequency over recent questions)
     top_doubts = []
@@ -371,12 +462,45 @@ def teacher_overview(institute_id: str, user=Depends(require_role("teacher", "ad
 
 
 @app.get("/teacher/tests/pending")
-def teacher_pending_tests(institute_id: str, user=Depends(require_role("teacher", "admin"))):
+def teacher_pending_tests(institute_id: str = "", user=Depends(require_role("teacher", "admin"))):
     sb = get_supabase()
-    tests = (sb.table("tests").select("id, student_id, subject, questions, status, created_at")
-             .eq("institute_id", institute_id).eq("status", "pending")
-             .order("created_at", desc=True).execute().data or [])
-    return {"tests": tests}
+    q = (sb.table("tests").select("id, student_id, subject, questions, status, created_at")
+         .eq("status", "pending").order("created_at", desc=True))
+    inst = _as_uuid(institute_id)
+    if inst:
+        q = q.eq("institute_id", inst)
+    return {"tests": q.execute().data or []}
+
+
+@app.get("/teacher/submissions")
+def teacher_submissions(institute_id: str = "", user=Depends(require_role("teacher", "admin"))):
+    """Tests students have submitted (status 'evaluated'), with scores — newest first.
+
+    Filters by institute when a valid institute_id is given; otherwise returns all
+    submissions (single-institute / demo setups where students have no institute).
+    """
+    sb = get_supabase()
+    q = (sb.table("tests")
+         .select("id, student_id, subject, score, total_marks, status, created_at")
+         .eq("status", "evaluated").order("created_at", desc=True))
+    inst = _as_uuid(institute_id)
+    if inst:
+        q = q.eq("institute_id", inst)
+    tests = q.limit(100).execute().data or []
+
+    # Attach the student's name/email to each submission.
+    ids = list({t["student_id"] for t in tests if t.get("student_id")})
+    names = {}
+    if ids:
+        srows = (sb.table("students").select("id, name, email")
+                 .in_("id", ids).execute().data or [])
+        names = {s["id"]: s for s in srows}
+    for t in tests:
+        s = names.get(t.get("student_id")) or {}
+        t["student_name"] = s.get("name") or s.get("email") or "Unknown"
+        t["percent"] = (round((t.get("score") or 0) / t["total_marks"] * 100)
+                        if t.get("total_marks") else None)
+    return {"submissions": tests}
 
 
 @app.post("/teacher/alerts/read")
@@ -389,41 +513,61 @@ def mark_alert_read(req: MarkAlertRequest, user=Depends(require_role("teacher", 
 # ── Parent ────────────────────────────────────────────────────────────────────
 @app.get("/parent/report")
 def parent_report(user=Depends(require_role("parent"))):
-    """Latest weekly report + this week's summary for the parent's child.
+    """Latest weekly report + this week's summary for each of the parent's children.
 
-    A parent is linked to a student by sharing parent's email == students.email,
-    or by parent_phone. Adjust the linkage to your enrollment model as needed.
+    A parent is linked to a student by students.parent_email == the parent's login
+    email. The child enters this address when signing up. A parent may have more
+    than one child, so we return a `children` list; the top-level fields mirror the
+    first child for backward compatibility.
     """
     from agents.parent_report_agent import _week_summary
     sb = get_supabase()
 
-    student = (sb.table("students").select("*")
-               .or_(f"email.eq.{user['email']},parent_phone.eq.{user.get('email')}")
-               .limit(1).execute().data)
-    if not student:
-        return {"student_name": None, "summary": {}, "latest_report": None}
-    student = student[0]
+    # Match case-insensitively against the normalised (lowercased) parent_email.
+    parent_email = (user.get("email") or "").strip().lower()
+    students = (sb.table("students").select("*")
+                .eq("parent_email", parent_email)
+                .order("created_at").execute().data) or []
+    if not students:
+        return {"student_name": None, "summary": {}, "latest_report": None, "children": []}
 
-    latest = (sb.table("parent_reports").select("report_text, week_start")
-              .eq("student_id", student["id"]).order("week_start", desc=True)
-              .limit(1).execute().data)
+    children = []
+    for student in students:
+        latest = (sb.table("parent_reports").select("report_text, week_start")
+                  .eq("student_id", student["id"]).order("week_start", desc=True)
+                  .limit(1).execute().data)
+        children.append({
+            "student_name": student.get("name"),
+            "summary": _week_summary(sb, student["id"]),
+            "latest_report": latest[0]["report_text"] if latest else None,
+        })
 
-    return {
-        "student_name": student.get("name"),
-        "summary": _week_summary(sb, student["id"]),
-        "latest_report": latest[0]["report_text"] if latest else None,
-    }
+    first = children[0]
+    return {**first, "children": children}
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 @app.get("/admin/analytics")
-def admin_analytics(institute_id: str, user=Depends(require_role("admin"))):
-    """Headline institute metrics + simple renewal/revenue signals."""
+def admin_analytics(institute_id: str = "", user=Depends(require_role("admin"))):
+    """Full institute view for an admin: headline metrics, every student record,
+    and every auth account grouped by role (students / teachers / parents / admins).
+
+    `institute_id` is optional — when blank (or not a UUID) the admin gets a
+    platform-wide view across all institutes. Uses the service-role key, so it
+    bypasses RLS and can read every account.
+    """
     from datetime import datetime, timedelta, timezone
     sb = get_supabase()
+    iid = _as_uuid(institute_id)  # None → no institute filter (see everything)
 
-    students = (sb.table("students").select("id, last_active, streak_days")
-                .eq("institute_id", institute_id).execute().data or [])
+    # ── Students (full records) ────────────────────────────────────────────
+    sq = sb.table("students").select(
+        "id, name, email, parent_email, phone, target_exam, exam_date, "
+        "xp_points, streak_days, last_active, institute_id, created_at"
+    )
+    if iid:
+        sq = sq.eq("institute_id", iid)
+    students = sq.order("created_at", desc=True).execute().data or []
     total = len(students)
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
@@ -437,13 +581,40 @@ def admin_analytics(institute_id: str, user=Depends(require_role("admin"))):
             return False
 
     active = sum(1 for s in students if _active(s))
-    at_risk = (sb.table("alerts").select("id", count="exact")
-               .eq("institute_id", institute_id).eq("is_read", False).execute().count or 0)
-    tests_week = (sb.table("tests").select("id", count="exact")
-                  .eq("institute_id", institute_id)
-                  .gte("created_at", week_ago.isoformat()).execute().count or 0)
+
+    aq = sb.table("alerts").select("id", count="exact").eq("is_read", False)
+    if iid:
+        aq = aq.eq("institute_id", iid)
+    at_risk = aq.execute().count or 0
+
+    tq = sb.table("tests").select("id", count="exact").gte("created_at", week_ago.isoformat())
+    if iid:
+        tq = tq.eq("institute_id", iid)
+    tests_week = tq.execute().count or 0
 
     renewal_pct = round((active / total) * 100, 1) if total else 0.0
+
+    # ── All auth accounts, grouped by role ─────────────────────────────────
+    accounts = {"student": [], "teacher": [], "parent": [], "admin": []}
+    try:
+        res = sb.auth.admin.list_users()
+        users = res if isinstance(res, list) else getattr(res, "users", []) or []
+        for u in users:
+            meta = u.user_metadata or {}
+            role = meta.get("role") or "student"
+            entry = {
+                "id": u.id,
+                "email": u.email,
+                "name": meta.get("name") or u.email,
+                "role": role,
+                "institute_id": meta.get("institute_id"),
+                "parent_email": meta.get("parent_email"),
+                "created_at": str(getattr(u, "created_at", "") or ""),
+                "last_sign_in": str(getattr(u, "last_sign_in_at", "") or ""),
+            }
+            accounts.setdefault(role, []).append(entry)
+    except Exception as e:
+        print(f"[admin] list_users failed: {e}")
 
     return {
         "active_students": active,
@@ -456,6 +627,17 @@ def admin_analytics(institute_id: str, user=Depends(require_role("admin"))):
             {"label": "Engaged (7d)", "value": active},
             {"label": "Predicted renewals", "value": round(total * renewal_pct / 100)},
         ],
+        "counts": {
+            "students": len(accounts["student"]),
+            "teachers": len(accounts["teacher"]),
+            "parents": len(accounts["parent"]),
+            "admins": len(accounts["admin"]),
+        },
+        "students": students,
+        "teachers": accounts["teacher"],
+        "parents": accounts["parent"],
+        "admins": accounts["admin"],
+        "student_accounts": accounts["student"],
     }
 
 
@@ -468,14 +650,93 @@ def debug_history(thread_id: str, user=Depends(require_role("admin", "teacher"))
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+def _as_uuid(value) -> str | None:
+    """Return value as a canonical UUID string, or None if it isn't a valid UUID."""
+    try:
+        return str(uuid.UUID(str(value))) if value else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+# XP granted per activity — keeps the progress page's gamification meaningful.
+XP_REWARDS = {"doubt": 10, "test": 50, "flashcard": 5}
+
+
+def _award_activity(student_id: str, kind: str) -> None:
+    """Grant XP for an activity and roll the daily streak forward.
+
+    Streak rules (by calendar day, UTC):
+      • already active today      -> streak unchanged (min 1)
+      • last active yesterday     -> streak + 1
+      • never / older than a day  -> streak reset to 1
+
+    Best-effort: it swallows errors so a DB hiccup can never break the
+    user-facing response (doubt answer, test result, etc.).
+    """
+    from datetime import datetime, timedelta, timezone
+    try:
+        sb = get_supabase()
+        row = (sb.table("students").select("xp_points, streak_days, last_active")
+               .eq("id", student_id).limit(1).execute()).data
+        cur = row[0] if row else {}
+
+        today = datetime.now(timezone.utc).date()
+        last_date = None
+        if cur.get("last_active"):
+            try:
+                last_date = datetime.fromisoformat(
+                    str(cur["last_active"]).replace("Z", "+00:00")
+                ).date()
+            except ValueError:
+                last_date = None
+
+        streak = int(cur.get("streak_days") or 0)
+        if last_date == today:
+            new_streak = max(streak, 1)
+        elif last_date == today - timedelta(days=1):
+            new_streak = streak + 1
+        else:
+            new_streak = 1
+
+        sb.table("students").update({
+            "xp_points": int(cur.get("xp_points") or 0) + XP_REWARDS.get(kind, 0),
+            "streak_days": new_streak,
+            "last_active": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", student_id).execute()
+    except Exception as e:
+        print(f"[gamify] award failed for {student_id}: {e}")
+
+
 def _resolve_student_id(user: dict) -> str:
-    """Map an authenticated user to their students.id row."""
+    """Map an authenticated user to their students.id row.
+
+    Lazily provisions the profile row the first time we see a student. The
+    frontend also upserts on login, but that runs with the anon key and can be
+    blocked by RLS; this backend call uses the service-role key, so it always
+    succeeds and prevents a "no student profile" 404 on a freshly signed-up user.
+    """
     sb = get_supabase()
     res = (sb.table("students").select("id").eq("auth_id", user["id"])
            .limit(1).execute()).data
-    if not res:
+    if res:
+        return res[0]["id"]
+
+    # Only students get an auto-created profile; other roles genuinely have none.
+    if (user.get("role") or "student") != "student":
         raise HTTPException(status_code=404, detail="No student profile for this account")
-    return res[0]["id"]
+
+    parent_email = (user.get("parent_email") or "").strip().lower() or None
+    created = (sb.table("students").insert({
+        "auth_id": user["id"],
+        "name": user.get("name") or user.get("email"),
+        "email": user.get("email"),
+        # institute_id is a UUID column — ignore non-UUID values (e.g. "678909")
+        "institute_id": _as_uuid(user.get("institute_id")),
+        "parent_email": parent_email,
+    }).execute()).data
+    if not created:
+        raise HTTPException(status_code=404, detail="Could not create student profile")
+    return created[0]["id"]
 
 
 if __name__ == "__main__":

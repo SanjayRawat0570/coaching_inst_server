@@ -64,6 +64,7 @@ def get_current_user(
         "role": metadata.get("role"),
         "name": metadata.get("name"),
         "institute_id": metadata.get("institute_id"),
+        "parent_email": metadata.get("parent_email"),
         "raw": user,
     }
 

@@ -1,17 +1,20 @@
 import { Html, Head, Main, NextScript } from "next/document";
 
+// Set the theme class before first paint so there is no flash of the wrong theme.
+const themeScript = `(function(){try{
+  var t = localStorage.getItem('theme');
+  if(!t){ t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; }
+  if(t === 'dark'){ document.documentElement.classList.add('dark'); }
+}catch(e){ document.documentElement.classList.add('dark'); }})();`;
+
 export default function Document() {
   return (
-    <Html lang="en" className="dark">
+    <Html lang="en">
       <Head>
-        <meta name="theme-color" content="#070b18" />
-        <meta
-          name="description"
-          content="Smart Coaching — AI agents that teach every JEE/NEET student individually."
-        />
+        <meta name="description" content="Smart Coaching — AI agents that teach every JEE/NEET student individually." />
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </Head>
-      {/* bg color set here too so there is no white flash before CSS loads */}
-      <body style={{ backgroundColor: "#070b18", color: "#e2e8f0" }}>
+      <body>
         <Main />
         <NextScript />
       </body>

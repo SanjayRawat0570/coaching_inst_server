@@ -90,7 +90,7 @@ export default function DoubtPage() {
   }
 
   return (
-    <Shell requireRole="student" title="Ask a Doubt">
+    <Shell requireRole="student" title="Ask a Doubt" subtitle="24/7 AI tutor — answers from NCERT & your institute notes">
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <select
           className="input max-w-[200px]"
@@ -101,9 +101,10 @@ export default function DoubtPage() {
             <option key={s}>{s}</option>
           ))}
         </select>
-        <label className="flex items-center gap-2 text-sm muted">
+        <label className="flex items-center gap-2 text-sm muted cursor-pointer select-none">
           <input
             type="checkbox"
+            className="accent-[#7c5cff]"
             checked={socratic}
             onChange={(e) => setSocratic(e.target.checked)}
           />
@@ -111,28 +112,52 @@ export default function DoubtPage() {
         </label>
       </div>
 
-      <div className="card h-[55vh] overflow-y-auto p-4 space-y-3">
+      <div className="card h-[55vh] overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
-          <p className="muted text-center mt-20">
-            Ask anything — type, speak (🎙 Hindi), or upload a photo of a question.
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={m.role === "user" ? "text-right" : "text-left"}>
-            <div
-              className={
-                "inline-block px-4 py-2 rounded-2xl max-w-[80%] whitespace-pre-wrap " +
-                (m.role === "user" ? "bg-brand-grad text-white shadow-glow" : "bg-ink-700 text-slate-100")
-              }
-            >
-              {m.content || (streaming ? "…" : "")}
-            </div>
+          <div className="empty-state h-full">
+            <span className="icon">💬</span>
+            <p className="font-semibold">Ask me anything</p>
+            <p className="muted text-sm mt-1 max-w-sm">
+              Type your question, speak it (🎙 Hindi supported), or upload a photo of a problem.
+            </p>
           </div>
-        ))}
+        )}
+        {messages.map((m, i) => {
+          const isUser = m.role === "user";
+          const isLast = i === messages.length - 1;
+          return (
+            <div key={i} className={"flex items-end gap-2 " + (isUser ? "flex-row-reverse" : "")}>
+              <span
+                className={
+                  "grid place-items-center h-8 w-8 rounded-lg text-sm shrink-0 " +
+                  (isUser ? "bg-brand-grad text-white" : "bg-slate-200 dark:bg-ink-700")
+                }
+              >
+                {isUser ? "🧑" : "🤖"}
+              </span>
+              <div
+                className={
+                  "px-4 py-2.5 rounded-2xl max-w-[80%] whitespace-pre-wrap leading-relaxed shadow-sm " +
+                  (isUser
+                    ? "bg-brand-grad text-white rounded-br-sm shadow-glow"
+                    : "bg-slate-100 text-slate-800 dark:bg-ink-700 dark:text-slate-100 rounded-bl-sm")
+                }
+              >
+                {m.content || (streaming && isLast ? (
+                  <span className="inline-flex gap-1 py-1">
+                    <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </span>
+                ) : "")}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {status && <p className="text-xs muted mt-2">{status}</p>}
-      {image && <p className="text-xs text-emerald-300 mt-2">📷 Image attached</p>}
+      {image && <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-2">📷 Image attached</p>}
 
       <div className="flex items-center gap-2 mt-3">
         <button onClick={startVoice} className="btn-ghost" title="Hindi voice">

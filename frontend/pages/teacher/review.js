@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Shell from "../../components/Shell";
+import { EmptyState, SkeletonCard } from "../../components/ui";
 import { api } from "../../lib/api";
 import { supabase } from "../../lib/supabase";
 
@@ -96,7 +97,11 @@ export default function ReviewPage() {
   }
 
   return (
-    <Shell requireRole="teacher" title="Review & Approve Tests">
+    <Shell
+      requireRole="teacher"
+      title="Review & Approve Tests"
+      subtitle="Generate AI tests, edit questions, and approve before they reach students"
+    >
       {/* Generate a personalized test for a student */}
       <form
         onSubmit={generate}
@@ -148,9 +153,18 @@ export default function ReviewPage() {
       </form>
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <div className="space-y-6">
+          <SkeletonCard lines={4} />
+          <SkeletonCard lines={4} />
+        </div>
       ) : pending.length === 0 ? (
-        <p className="muted">No tests awaiting approval. 🎉</p>
+        <div className="card">
+          <EmptyState
+            icon="🎉"
+            title="Nothing awaiting approval"
+            hint="Generate a personalised test above and it'll appear here for review."
+          />
+        </div>
       ) : (
         <div className="space-y-6">
           {pending.map((test) => {
@@ -182,7 +196,7 @@ export default function ReviewPage() {
 
                 <div className="space-y-4">
                   {questions.map((q, qi) => (
-                    <div key={qi} className="rounded-xl border border-white/10 bg-ink-900/50 p-3">
+                    <div key={qi} className="panel p-3">
                       <div className="flex justify-between text-xs muted mb-1">
                         <span>Q{qi + 1} · {q.concept}</span>
                         <span>{q.difficulty}</span>
@@ -201,8 +215,8 @@ export default function ReviewPage() {
                             className={
                               "text-sm px-2 py-1 rounded-lg border " +
                               (oi === q.answer_index
-                                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-200"
-                                : "bg-ink-900/60 border-white/10")
+                                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-200"
+                                : "bg-slate-50 border-slate-200 dark:bg-ink-900/60 dark:border-white/10")
                             }
                           >
                             {String.fromCharCode(65 + oi)}. {opt}
