@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Shell from "../../components/Shell";
 import { EmptyState } from "../../components/ui";
+import Icon from "../../components/Icon";
 import { supabase } from "../../lib/supabase";
 import { api } from "../../lib/api";
 
@@ -69,7 +70,11 @@ export default function TestPage() {
     }
   }
 
-  const answered = active ? Object.keys(answers).length : 0;
+  const answered = active
+    ? Object.values(answers).filter(
+        (v) => typeof v === "number" || (typeof v === "string" && v.trim() !== "")
+      ).length
+    : 0;
   const totalQ = active ? active.questions.length : 0;
   const progressPct = totalQ ? Math.round((answered / totalQ) * 100) : 0;
 
@@ -81,7 +86,7 @@ export default function TestPage() {
           {tests.length === 0 ? (
             <div className="card">
               <EmptyState
-                icon="📝"
+                icon={<Icon name="tests" size={26} />}
                 title="No tests ready yet"
                 hint="Your teacher will assign a personalised test soon. Check back later."
               />
@@ -93,7 +98,7 @@ export default function TestPage() {
                 className="card card-hover p-4 flex items-center justify-between"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="grid place-items-center h-11 w-11 rounded-xl bg-brand-soft text-xl shrink-0">📝</span>
+                  <span className="icon-tile h-11 w-11 shrink-0"><Icon name="tests" size={20} /></span>
                   <div className="min-w-0">
                     <p className="font-semibold truncate">{t.subject || "Mixed"} test</p>
                     <p className="text-sm muted">
@@ -102,7 +107,7 @@ export default function TestPage() {
                   </div>
                 </div>
                 <button onClick={() => begin(t)} className="btn-primary shrink-0">
-                  Start →
+                  Start <Icon name="arrowRight" size={16} />
                 </button>
               </div>
             ))
@@ -120,11 +125,11 @@ export default function TestPage() {
               </span>
               <span
                 className={
-                  "font-mono text-lg tabular-nums " +
+                  "inline-flex items-center gap-1.5 font-mono text-lg tabular-nums " +
                   (timeLeft < 60 ? "text-rose-500 dark:text-neon-rose animate-pulse" : "text-slate-700 dark:text-slate-200")
                 }
               >
-                ⏱ {mmss}
+                <Icon name="clock" size={16} /> {mmss}
               </span>
             </div>
             <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
@@ -136,37 +141,50 @@ export default function TestPage() {
           </div>
 
           <div className="space-y-5">
-            {active.questions.map((q, i) => (
+            {active.questions.map((q, i) => {
+              const isTheory = q.type === "theory" || (!q.options && q.model_answer !== undefined);
+              return (
               <div key={i} className="card p-4">
                 <div className="flex justify-between text-xs muted mb-1">
                   <span>Q{i + 1} · {q.concept}</span>
-                  <span>+{q.marks ?? 4} / −{q.negative ?? 1}</span>
+                  <span>{isTheory ? `+${q.marks ?? 5}` : `+${q.marks ?? 4} / −${q.negative ?? 1}`}</span>
                 </div>
                 <p className="font-medium mb-3">{q.question}</p>
-                <div className="grid gap-2">
-                  {(q.options || []).map((opt, oi) => (
-                    <label
-                      key={oi}
-                      className={
-                        "border rounded-lg px-3 py-2 cursor-pointer transition " +
-                        (answers[i] === oi
-                          ? "border-brand bg-brand/15 text-brand dark:text-white font-medium"
-                          : "border-slate-200 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/5")
-                      }
-                    >
-                      <input
-                        type="radio"
-                        name={`q${i}`}
-                        className="mr-2"
-                        checked={answers[i] === oi}
-                        onChange={() => setAnswers({ ...answers, [i]: oi })}
-                      />
-                      {opt}
-                    </label>
-                  ))}
-                </div>
+                {isTheory ? (
+                  <textarea
+                    className="input text-sm"
+                    rows={5}
+                    placeholder="Write your answer — show your steps and reasoning."
+                    value={typeof answers[i] === "string" ? answers[i] : ""}
+                    onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })}
+                  />
+                ) : (
+                  <div className="grid gap-2">
+                    {(q.options || []).map((opt, oi) => (
+                      <label
+                        key={oi}
+                        className={
+                          "border rounded-lg px-3 py-2 cursor-pointer transition " +
+                          (answers[i] === oi
+                            ? "border-brand bg-brand/15 text-brand dark:text-white font-medium"
+                            : "border-slate-200 hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/5")
+                        }
+                      >
+                        <input
+                          type="radio"
+                          name={`q${i}`}
+                          className="mr-2"
+                          checked={answers[i] === oi}
+                          onChange={() => setAnswers({ ...answers, [i]: oi })}
+                        />
+                        {opt}
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <button
@@ -181,16 +199,16 @@ export default function TestPage() {
 
       {/* Result */}
       {result && (
-        <div className="card p-8 max-w-md mx-auto text-center shadow-glow">
-          <span className="grid place-items-center h-16 w-16 mx-auto rounded-2xl bg-brand-soft text-3xl mb-4 shadow-glow">🎉</span>
+        <div className="card p-8 max-w-md mx-auto text-center shadow-soft-lg">
+          <span className="grid place-items-center h-16 w-16 mx-auto rounded-2xl bg-brand-grad text-white mb-4 shadow-glow"><Icon name="trophy" size={30} className="text-white" /></span>
           <p className="stat-label">Your score</p>
           <p className="text-5xl font-extrabold grad-text mt-1">
-            {result.score}
-            <span className="text-lg muted font-bold"> / {result.evaluation?.total_marks}</span>
+            {result.score ?? 0}
+            <span className="text-lg muted font-bold"> / {result.total_marks ?? result.evaluation?.total_marks ?? 0}</span>
           </p>
           {result.air_rank && (
             <div className="panel inline-flex items-center gap-2 mt-5 px-4 py-2 text-sm">
-              📊 Predicted rank:
+              <Icon name="analytics" size={15} className="text-cyan-600 dark:text-neon-cyan" /> Predicted rank:
               <span className="font-semibold text-cyan-600 dark:text-neon-cyan">{result.air_rank}</span>
             </div>
           )}
@@ -201,7 +219,7 @@ export default function TestPage() {
             }}
             className="btn-ghost w-full mt-6"
           >
-            ← Back to tests
+            <Icon name="arrowLeft" size={16} /> Back to tests
           </button>
         </div>
       )}

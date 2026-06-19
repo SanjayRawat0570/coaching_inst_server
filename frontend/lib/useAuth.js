@@ -23,7 +23,7 @@ export function useAuth({ requireRole } = {}) {
 
       if (!user) {
         setLoading(false);
-        if (requireRole) router.replace("/");
+        if (requireRole) router.replace("/login");
         return;
       }
       const r = user.user_metadata?.role || null;
@@ -32,7 +32,7 @@ export function useAuth({ requireRole } = {}) {
       setLoading(false);
 
       if (requireRole && r !== requireRole) {
-        router.replace("/");
+        router.replace("/login");
       }
     }
 

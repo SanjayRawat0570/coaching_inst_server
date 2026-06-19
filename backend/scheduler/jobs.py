@@ -1,6 +1,8 @@
 """APScheduler job registration — no Celery, no Redis.
 
   Nightly 11PM  -> at_risk_agent.run_nightly      (flag dropouts 7 days early)
+  Nightly 9PM   -> inactivity_alert_agent.run_nightly (F7: email teacher+parent on 3-day no-login / skipped test)
+  Nightly 2AM   -> doubt_cluster_agent.run_nightly (F3: cluster similar doubts)
   Sunday 8PM    -> parent_report_agent.run_weekly  (WhatsApp progress to parents)
   Monday 7AM    -> study_plan_agent.run_weekly      (rebuild weekly timetables)
   Every 5 min   -> flashcard reminder checker
@@ -26,6 +28,16 @@ def _weekly_parent_reports():
 def _weekly_study_plans():
     from agents.study_plan_agent import run_weekly
     print("[scheduler] study plans:", run_weekly())
+
+
+def _nightly_doubt_clusters():
+    from agents.doubt_cluster_agent import run_nightly
+    print("[scheduler] doubt clusters:", run_nightly())
+
+
+def _nightly_inactivity_alerts():
+    from agents.inactivity_alert_agent import run_nightly
+    print("[scheduler] inactivity alerts:", run_nightly())
 
 
 def _flashcard_reminders():
@@ -59,6 +71,10 @@ def start_scheduler() -> BackgroundScheduler:
                       minute=0, id="parent_reports_weekly")
     scheduler.add_job(_weekly_study_plans, "cron", day_of_week="mon", hour=7,
                       minute=0, id="study_plans_weekly")
+    scheduler.add_job(_nightly_doubt_clusters, "cron", hour=2, minute=0,
+                      id="doubt_clusters_nightly")
+    scheduler.add_job(_nightly_inactivity_alerts, "cron", hour=21, minute=0,
+                      id="inactivity_alerts_nightly")
     scheduler.add_job(_flashcard_reminders, "interval", minutes=5,
                       id="flashcard_reminders")
     scheduler.start()

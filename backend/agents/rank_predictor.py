@@ -2,10 +2,14 @@
 
 After each test we estimate a percentage, retrieve historical rank-vs-score cutoff
 chunks (source='nta_cutoff') from Qdrant, and let the LLM map the student to an AIR
-band grounded in that data.
+band grounded in that data. The latest prediction is persisted onto the student
+profile (predicted_rank / _context / _at) so the dashboard can show it as a big
+number (F5).
 """
 
 import os
+import json
+from datetime import datetime, timezone
 
 from graph.state import CoachingState
 
@@ -37,23 +41,36 @@ def rank_predictor_node(state: CoachingState) -> CoachingState:
         cutoff_context = "\n".join(cutoff_chunks)
 
         llm = get_llm()
-        prediction = llm.invoke(
+        raw = llm.invoke(
             f"Estimate an All India Rank band for a {target_exam} aspirant.\n"
             f"Latest test: {score}/{total} ({pct}%).\n"
             f"Historical NTA rank-vs-score data:\n{cutoff_context or '(no data — give a rough band)'}\n"
-            "Reply with ONLY a short rank band like 'AIR 8,000 - 12,000' and one short "
-            "sentence of context. No preamble."
+            'Return ONLY JSON: {"band": "AIR 8,000 - 12,000", '
+            '"context": "one short sentence of context"}'
         ).content.strip()
 
-        # Best-effort persist onto the student profile
+        # Parse the structured band/context; fall back to the raw text as the band.
+        band, context = raw, ""
         try:
-            _supabase().table("students").update(
-                {"last_active": "now()"}
-            ).eq("id", state["student_id"]).execute()
-        except Exception:
-            pass
+            data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+            band = (data.get("band") or raw).strip()
+            context = (data.get("context") or "").strip()
+        except Exception as e:
+            print(f"[rank_predictor] JSON parse failed, using raw text: {e}")
 
-        return {**state, "air_rank": prediction, "score": score}
+        # Best-effort persist onto the student profile so the dashboard can show it.
+        try:
+            _supabase().table("students").update({
+                "predicted_rank": band,
+                "predicted_rank_context": context,
+                "predicted_rank_at": datetime.now(timezone.utc).isoformat(),
+                "last_active": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", state["student_id"]).execute()
+        except Exception as e:
+            print(f"[rank_predictor] persist failed: {e}")
+
+        return {**state, "air_rank": band, "air_rank_context": context, "score": score}
 
     except Exception as e:
-        return {**state, "error": str(e), "air_rank": "Not enough data yet"}
+        return {**state, "error": str(e), "air_rank": "Not enough data yet",
+                "air_rank_context": ""}

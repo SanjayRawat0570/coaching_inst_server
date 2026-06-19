@@ -37,16 +37,23 @@ def reviewer_node(state: CoachingState) -> CoachingState:
         total = len(questions)
         split = _difficulty_split(questions)
 
-        # Target 30% easy, 50% medium, 20% hard (tolerance of one question each)
-        targets = {"easy": 0.30 * total, "medium": 0.50 * total, "hard": 0.20 * total}
-        balanced = all(abs(split[k] - targets[k]) <= 1.5 for k in targets)
+        # Use the generator's adaptive difficulty mix (F4) if present, else 30/50/20.
+        mix = state.get("difficulty_mix") or {"easy": 30, "medium": 50, "hard": 20}
+        targets = {k: mix.get(k, 0) / 100 * total for k in ("easy", "medium", "hard")}
+        balanced = all(abs(split[k] - targets[k]) <= 2 for k in targets)
 
         # LLM quality check on correctness + clarity
+        is_theory = any(q.get("type") == "theory" for q in questions)
         sample = json.dumps(questions[:5], ensure_ascii=False)
+        criteria = (
+            "factual correctness, a sound model answer / marking scheme, and clear wording"
+            if is_theory
+            else "factual correctness, exactly one correct option, and clear wording"
+        )
         llm = get_llm()
         verdict = llm.invoke(
             "You are a JEE/NEET exam committee reviewer. Check these questions for "
-            "factual correctness, exactly one correct option, and clear wording.\n"
+            f"{criteria}.\n"
             f"Questions: {sample}\n"
             'Reply ONLY as JSON: {"ok": true/false, "feedback": "short reason"}'
         ).content

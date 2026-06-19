@@ -1,14 +1,13 @@
 import { useRef, useState } from "react";
 import Shell from "../../components/Shell";
+import Icon from "../../components/Icon";
 import { streamDoubt } from "../../lib/api";
 import { supabase } from "../../lib/supabase";
-
-const SUBJECTS = ["Physics", "Chemistry", "Mathematics", "Biology"];
 
 export default function DoubtPage() {
   const [messages, setMessages] = useState([]); // {role, content}
   const [input, setInput] = useState("");
-  const [subject, setSubject] = useState("Physics");
+  const [subject, setSubject] = useState("");
   const [socratic, setSocratic] = useState(false);
   const [status, setStatus] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -76,7 +75,7 @@ export default function DoubtPage() {
         onError: (msg) =>
           setMessages((m) => {
             const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: `⚠️ ${msg}` };
+            copy[copy.length - 1] = { role: "assistant", content: `Error: ${msg}` };
             return copy;
           }),
         onDone: () => {
@@ -92,15 +91,14 @@ export default function DoubtPage() {
   return (
     <Shell requireRole="student" title="Ask a Doubt" subtitle="24/7 AI tutor — answers from NCERT & your institute notes">
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <select
+        <input
+          type="text"
+          autoComplete="off"
           className="input max-w-[200px]"
+          placeholder="Type any subject"
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
-        >
-          {SUBJECTS.map((s) => (
-            <option key={s}>{s}</option>
-          ))}
-        </select>
+        />
         <label className="flex items-center gap-2 text-sm muted cursor-pointer select-none">
           <input
             type="checkbox"
@@ -115,10 +113,10 @@ export default function DoubtPage() {
       <div className="card h-[55vh] overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
           <div className="empty-state h-full">
-            <span className="icon">💬</span>
+            <span className="icon"><Icon name="doubt" size={26} /></span>
             <p className="font-semibold">Ask me anything</p>
             <p className="muted text-sm mt-1 max-w-sm">
-              Type your question, speak it (🎙 Hindi supported), or upload a photo of a problem.
+              Type your question, speak it (Hindi supported), or upload a photo of a problem.
             </p>
           </div>
         )}
@@ -129,11 +127,11 @@ export default function DoubtPage() {
             <div key={i} className={"flex items-end gap-2 " + (isUser ? "flex-row-reverse" : "")}>
               <span
                 className={
-                  "grid place-items-center h-8 w-8 rounded-lg text-sm shrink-0 " +
-                  (isUser ? "bg-brand-grad text-white" : "bg-slate-200 dark:bg-ink-700")
+                  "grid place-items-center h-8 w-8 rounded-lg shrink-0 " +
+                  (isUser ? "bg-brand-grad text-white" : "bg-slate-200 text-slate-600 dark:bg-ink-700 dark:text-slate-300")
                 }
               >
-                {isUser ? "🧑" : "🤖"}
+                <Icon name={isUser ? "user" : "bot"} size={16} className={isUser ? "text-white" : ""} />
               </span>
               <div
                 className={
@@ -157,18 +155,19 @@ export default function DoubtPage() {
       </div>
 
       {status && <p className="text-xs muted mt-2">{status}</p>}
-      {image && <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-2">📷 Image attached</p>}
+      {image && <p className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-300 mt-2"><Icon name="camera" size={13} /> Image attached</p>}
 
       <div className="flex items-center gap-2 mt-3">
-        <button onClick={startVoice} className="btn-ghost" title="Hindi voice">
-          🎙
+        <button onClick={startVoice} className="btn-ghost px-2.5" title="Hindi voice input" aria-label="Voice input">
+          <Icon name="mic" size={18} />
         </button>
         <button
           onClick={() => fileRef.current?.click()}
-          className="btn-ghost"
+          className="btn-ghost px-2.5"
           title="Upload question photo"
+          aria-label="Upload photo"
         >
-          📷
+          <Icon name="camera" size={18} />
         </button>
         <input
           ref={fileRef}
@@ -189,7 +188,7 @@ export default function DoubtPage() {
           disabled={streaming}
           className="btn-primary px-5"
         >
-          Send
+          Send <Icon name="send" size={16} />
         </button>
       </div>
     </Shell>

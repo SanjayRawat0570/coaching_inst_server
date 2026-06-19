@@ -10,27 +10,22 @@ html,
 body {
   padding: 0;
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 /* ── Light (default) ── */
 body {
   color: #0f172a;
-  background-color: #f6f8fc;
-  background-image:
-    radial-gradient(900px 500px at 12% -8%, rgba(124, 92, 255, 0.10), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, rgba(34, 211, 238, 0.08), transparent 55%);
-  background-attachment: fixed;
+  background-color: #f8fafc;
 }
 
 /* ── Dark ── */
 html.dark body {
-  color: #e2e8f0;
-  background-color: #070b18;
-  background-image:
-    radial-gradient(900px 500px at 12% -8%, rgba(124, 92, 255, 0.18), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, rgba(34, 211, 238, 0.12), transparent 55%);
+  color: #e6eaf2;
+  background-color: #0b1120;
 }
 
 a {
@@ -38,82 +33,98 @@ a {
   text-decoration: none;
 }
 
+/* Headings: tighter tracking reads more premium */
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+
 /* Scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-color: #d4dae6 transparent;
 }
 html.dark * {
-  scrollbar-color: #26324f transparent;
+  scrollbar-color: #232f4d transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #d4dae6;
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 html.dark *::-webkit-scrollbar-thumb {
-  background: #1a2540;
+  background: #1c2742;
   background-clip: content-box;
 }
 
 @layer components {
   /* Surfaces */
   .card {
-    @apply rounded-2xl border bg-white border-slate-200 shadow-sm
-           dark:bg-ink-800/70 dark:border-white/10 dark:backdrop-blur-sm dark:shadow-card;
+    @apply rounded-2xl border bg-white border-slate-200/80 shadow-soft
+           dark:bg-ink-800/60 dark:border-white/[0.07] dark:backdrop-blur-xl dark:shadow-card;
   }
   .card-hover {
-    @apply transition hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-glow;
+    @apply transition duration-200 hover:-translate-y-0.5 hover:shadow-soft-lg
+           hover:border-slate-300 dark:hover:border-white/15;
   }
   /* Inner sub-surface (nested panels, bubbles, list rows) */
   .panel {
-    @apply rounded-xl border bg-slate-50 border-slate-200
-           dark:bg-ink-900/50 dark:border-white/10;
+    @apply rounded-xl border bg-slate-50/80 border-slate-200/80
+           dark:bg-white/[0.03] dark:border-white/[0.07];
   }
-  .hairline { @apply border-slate-200 dark:border-white/10; }
+  .hairline { @apply border-slate-200/80 dark:border-white/[0.07]; }
+
+  /* Icon tile — consistent container for line icons */
+  .icon-tile {
+    @apply grid place-items-center rounded-xl text-brand
+           bg-brand/[0.08] dark:bg-brand/[0.14] dark:text-indigo-300;
+  }
 
   /* Buttons */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold
+           transition duration-150 disabled:opacity-50 disabled:cursor-not-allowed
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 focus-visible:ring-offset-2
+           focus-visible:ring-offset-white dark:focus-visible:ring-offset-ink-900;
   }
-  .btn-primary { @apply btn text-white bg-brand-grad shadow-glow hover:brightness-110; }
+  .btn-primary { @apply btn text-white bg-brand shadow-soft hover:bg-brand-dark active:bg-brand-dark; }
   .btn-ghost {
-    @apply btn border border-slate-300 text-slate-700 hover:bg-slate-100
-           dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5;
+    @apply btn border border-slate-200 bg-white/60 text-slate-700 hover:bg-slate-100 hover:border-slate-300
+           dark:bg-white/[0.03] dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/[0.07];
   }
-  .btn-danger { @apply btn border border-rose-300 text-rose-600 hover:bg-rose-50
+  .btn-danger { @apply btn border border-rose-200 text-rose-600 hover:bg-rose-50
                        dark:border-neon-rose/30 dark:text-neon-rose dark:hover:bg-neon-rose/10; }
-  .btn-success { @apply btn text-white bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-500/90; }
+  .btn-success { @apply btn text-white bg-emerald-500 hover:bg-emerald-600 shadow-soft dark:bg-emerald-500/90; }
 
   /* Inputs */
   .input {
-    @apply w-full rounded-xl border bg-white border-slate-300 px-3 py-2 text-slate-900 placeholder-slate-400 outline-none transition
-           focus:border-brand/60 focus:ring-2 focus:ring-brand/20
-           dark:bg-ink-900/80 dark:border-white/10 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:ring-brand/30;
+    @apply w-full rounded-xl border bg-white border-slate-200 px-3.5 py-2.5 text-slate-900 placeholder-slate-400 outline-none transition
+           focus:border-brand/50 focus:ring-4 focus:ring-brand/10
+           dark:bg-ink-900/70 dark:border-white/10 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:ring-brand/20;
   }
 
   /* Pills / badges */
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
-  .badge-brand { @apply badge bg-brand/10 text-brand border border-brand/30 dark:bg-brand/15 dark:text-neon-violet; }
-  .badge-cyan  { @apply badge bg-cyan-500/10 text-cyan-600 border border-cyan-500/30 dark:bg-neon-cyan/10 dark:text-neon-cyan dark:border-neon-cyan/30; }
-  .badge-green { @apply badge bg-emerald-500/10 text-emerald-600 border border-emerald-500/30 dark:text-emerald-300; }
-  .badge-amber { @apply badge bg-amber-500/10 text-amber-600 border border-amber-500/30 dark:text-amber-300; }
+  .badge-brand { @apply badge bg-brand/10 text-brand border border-brand/20 dark:bg-brand/15 dark:text-indigo-300 dark:border-brand/25; }
+  .badge-cyan  { @apply badge bg-cyan-500/10 text-cyan-600 border border-cyan-500/20 dark:bg-neon-cyan/10 dark:text-neon-cyan dark:border-neon-cyan/25; }
+  .badge-green { @apply badge bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 dark:text-emerald-300 dark:border-emerald-400/25; }
+  .badge-amber { @apply badge bg-amber-500/10 text-amber-600 border border-amber-500/20 dark:text-amber-300 dark:border-amber-400/25; }
 
   /* Text helpers */
-  .h-section { @apply text-sm font-semibold tracking-wide text-slate-700 dark:text-slate-200; }
+  .h-section { @apply text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-100; }
   .muted { @apply text-slate-500 dark:text-slate-400; }
-  .grad-text { @apply bg-brand-grad bg-clip-text text-transparent; }
+  /* Was a gradient; now a solid brand accent for a calmer, professional look. */
+  .grad-text { @apply text-brand dark:text-indigo-400; }
 
   /* Stat tile — label, big value, optional trend */
-  .stat-value { @apply text-3xl font-extrabold tracking-tight tabular-nums; }
-  .stat-label { @apply text-xs font-medium uppercase tracking-wider muted; }
+  .stat-value { @apply text-[1.75rem] leading-tight font-bold tracking-tight tabular-nums; }
+  .stat-label { @apply text-[0.7rem] font-medium uppercase tracking-wider muted; }
 
   /* Skeleton shimmer for loading states */
   .skeleton {
@@ -142,12 +153,36 @@ html.dark *::-webkit-scrollbar-thumb {
   100% { background-position: -200% 0; }
 }
 
+/* F10 leaderboard rows slide/fade in on load */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Premium hero backdrop: faint dot grid + a soft indigo light from top.
+   Subtle enough to read as texture, not decoration. */
+.hero-bg {
+  background-color: #f8fafc;
+  background-image:
+    radial-gradient(820px 380px at 50% -8%, rgba(79, 70, 229, 0.10), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(79, 70, 229, 0.06) 1px, transparent 0);
+  background-size: 100% 100%, 22px 22px;
+}
+html.dark .hero-bg {
+  background-color: #0b1120;
+  background-image:
+    radial-gradient(820px 380px at 50% -8%, rgba(99, 102, 241, 0.16), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
+  background-size: 100% 100%, 22px 22px;
+}
+
 /* Empty-state wrapper */
 @layer components {
   .empty-state {
-    @apply flex flex-col items-center justify-center text-center py-14 px-6;
+    @apply flex flex-col items-center justify-center text-center py-16 px-6;
   }
   .empty-state .icon {
-    @apply grid place-items-center h-14 w-14 rounded-2xl bg-brand-soft text-2xl mb-4 shadow-glow;
+    @apply grid place-items-center h-14 w-14 rounded-2xl bg-brand/[0.08] text-brand mb-4
+           dark:bg-brand/[0.14] dark:text-indigo-300;
   }
 }

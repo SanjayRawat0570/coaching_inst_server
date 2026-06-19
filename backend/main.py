@@ -62,12 +62,37 @@ class GenerateTestRequest(BaseModel):
     institute_id: str
     subject: str | None = None
     num_questions: int = 10
+    question_type: str = "mcq"  # "mcq" | "theory"
 
 
 class ApproveTestRequest(BaseModel):
     test_id: str
     approved: bool = True
     edited_questions: list[dict] | None = None
+    due_date: str | None = None  # F7: ISO date the student must take it by
+
+
+class ParentGoalRequest(BaseModel):
+    student_id: str
+    target_college: str | None = None
+    target_rank: int | None = None
+
+
+class CreateChallengeRequest(BaseModel):
+    opponent_email: str
+    subject: str | None = None
+    num_questions: int = 5
+
+
+class GenerateClassTestRequest(BaseModel):
+    institute_id: str | None = None
+    subject: str | None = None
+    num_questions: int = 10
+
+
+class SubmitChallengeRequest(BaseModel):
+    challenge_id: str
+    answers: list = []  # chosen option index per question (null if skipped)
 
 
 class SubmitTestRequest(BaseModel):
@@ -263,28 +288,44 @@ def generate_test(req: GenerateTestRequest, user=Depends(require_role("teacher",
 
     sb = get_supabase()
 
-    # student_id must be a real students.id (UUID). Give a clear 400 instead of a
-    # 500 when a teacher pastes something that isn't (e.g. a roll number like "9098").
-    student_uuid = _as_uuid(req.student_id)
-    if not student_uuid:
-        raise HTTPException(
-            status_code=400,
-            detail="Student ID must be the student's UUID (students.id), not a roll number.",
-        )
-    student = (sb.table("students").select("id, institute_id")
-               .eq("id", student_uuid).limit(1).execute()).data
-    if not student:
-        raise HTTPException(status_code=404, detail="No student found with that ID.")
+    # Teachers identify the student by email (e.g. their Gmail). For backward
+    # compatibility we still accept a raw students.id (UUID) if one is passed.
+    raw = (req.student_id or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Enter the student's email address.")
+
+    if "@" in raw:
+        student = (sb.table("students").select("id, institute_id")
+                   .ilike("email", raw).limit(1).execute()).data
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No student found with email '{raw}'.",
+            )
+        student_uuid = student[0]["id"]
+    else:
+        student_uuid = _as_uuid(raw)
+        if not student_uuid:
+            raise HTTPException(
+                status_code=400,
+                detail="Enter the student's email address (e.g. name@gmail.com).",
+            )
+        student = (sb.table("students").select("id, institute_id")
+                   .eq("id", student_uuid).limit(1).execute()).data
+        if not student:
+            raise HTTPException(status_code=404, detail="No student found with that ID.")
 
     # Prefer the student's institute; fall back to the one the teacher sent. Empty
     # strings must become NULL — "" is not valid for a UUID column.
     institute_uuid = _as_uuid(student[0].get("institute_id")) or _as_uuid(req.institute_id)
 
+    question_type = "theory" if str(req.question_type).lower() == "theory" else "mcq"
     state = {
         "student_id": student_uuid,
         "institute_id": institute_uuid or "",
         "action_type": "test",
         "subject": req.subject,
+        "question_type": question_type,
         "iteration_count": 0,
         "conversation_history": [],
     }
@@ -295,29 +336,36 @@ def generate_test(req: GenerateTestRequest, user=Depends(require_role("teacher",
         if should_continue(state) == "approved" or state["iteration_count"] >= MAX_ITERATIONS:
             break
 
-    # Auto-publish: the generated (and AI self-reviewed) test goes straight to the
-    # student as "ready" — no separate teacher approval step.
+    # Save as "pending" so the teacher can review, adjust per-question marks, and
+    # approve before it reaches the student (HITL — see /test/approve).
     row = sb.table("tests").insert({
         "student_id": student_uuid,
         "institute_id": institute_uuid,
         "subject": req.subject,
         "questions": state.get("test_questions") or [],
-        "status": "ready",
-        "teacher_approved": True,
+        "status": "pending",
+        "teacher_approved": False,
     }).execute().data
     test_id = row[0]["id"] if row else None
     return {"test_id": test_id, "questions": state.get("test_questions"),
-            "review_feedback": state.get("review_feedback")}
+            "review_feedback": state.get("review_feedback"),
+            "difficulty_level": state.get("difficulty_level"),
+            "difficulty_mix": state.get("difficulty_mix")}
 
 
 @app.post("/test/approve")
 def approve_test(req: ApproveTestRequest, user=Depends(require_role("teacher", "admin"))):
     """HITL: teacher approves or edits a pending test before it reaches the student."""
+    from datetime import date, timedelta
     sb = get_supabase()
     update = {"teacher_approved": bool(req.approved),
               "status": "ready" if req.approved else "rejected"}
     if req.edited_questions is not None:
         update["questions"] = req.edited_questions
+    # F7: when sending to the student, set a due date (default 3 days out) so the
+    # nightly job can flag it as "skipped" if it's never taken.
+    if req.approved:
+        update["due_date"] = req.due_date or (date.today() + timedelta(days=3)).isoformat()
     sb.table("tests").update(update).eq("id", req.test_id).execute()
     return {"test_id": req.test_id, **update}
 
@@ -326,28 +374,64 @@ def approve_test(req: ApproveTestRequest, user=Depends(require_role("teacher", "
 def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
                 user=Depends(get_current_user)):
     """Student submits answers -> evaluate -> progress/rank/flashcards (post-test flow)."""
+    from agents.answer_evaluator import evaluator_node
     student_id = _resolve_student_id(user)
     sb = get_supabase()
     sb.table("tests").update({"answers": req.answers}).eq("id", req.test_id).execute()
 
-    from graph.coaching_graph import get_graph
-    from graph.checkpointer import get_checkpointer
-    # Checkpointer records every step under thread_id=test_id (time-travel via /debug)
-    graph = get_graph(checkpointer=get_checkpointer())
-    config = {"configurable": {"thread_id": req.test_id}}
-    result = graph.invoke({
+    base_state = {
         "student_id": student_id,
         "institute_id": "",
         "action_type": "evaluate",
         "test_id": req.test_id,
         "iteration_count": 0,
         "conversation_history": [],
-    }, config)
+    }
+
+    # 1) Evaluate FIRST and directly — this writes score/total_marks/status='evaluated'
+    #    to the tests row, which is what every dashboard reads. Doing it here (instead
+    #    of relying on the graph) guarantees the result is persisted even if a later
+    #    post-test branch fails.
+    ev = evaluator_node(base_state)
+    evaluation = ev.get("evaluation_result")
+
+    # 2) Run the post-test agents (progress / rank / flashcards) best-effort. Each is
+    #    isolated so one failing never hides the result the student just earned.
+    post_state = {**base_state, **ev}
+    result = {}
+    try:
+        from agents.rank_predictor import rank_predictor_node
+        r = rank_predictor_node(post_state) or {}
+        result["air_rank"] = r.get("air_rank")
+        result["air_rank_context"] = r.get("air_rank_context")
+        post_state = {**post_state, **r}
+    except Exception as e:
+        print(f"[submit] rank prediction failed: {e}")
+    try:
+        from agents.progress_tracker import progress_tracker_node
+        p = progress_tracker_node(post_state) or {}
+        result["weakness_update"] = p.get("weakness_update")
+    except Exception as e:
+        print(f"[submit] progress update failed: {e}")
+    try:
+        from agents.flashcard_agent import flashcard_gen_node
+        flashcard_gen_node(post_state)  # side effects only
+    except Exception as e:
+        print(f"[submit] flashcard generation failed: {e}")
+
     background.add_task(_award_activity, student_id, "test")
+
+    # 3) Return the authoritative numbers from the DB row (evaluator wrote them).
+    row = (sb.table("tests").select("score, total_marks, status")
+           .eq("id", req.test_id).limit(1).execute().data) or []
+    saved = row[0] if row else {}
     return {
-        "score": result.get("score"),
-        "evaluation": result.get("evaluation_result"),
+        "score": saved.get("score", ev.get("score")),
+        "total_marks": saved.get("total_marks",
+                                 (evaluation or {}).get("total_marks")),
+        "evaluation": evaluation,
         "air_rank": result.get("air_rank"),
+        "air_rank_context": result.get("air_rank_context"),
         "weakness_update": result.get("weakness_update"),
     }
 
@@ -365,9 +449,27 @@ def progress(user=Depends(get_current_user)):
     sb = get_supabase()
     weakness = (sb.table("weakness_map").select("subject, concept, score, attempts")
                 .eq("student_id", student_id).order("score", desc=False).execute()).data
-    student = (sb.table("students").select("xp_points, streak_days, target_exam")
+    student = (sb.table("students").select(
+        "xp_points, streak_days, target_exam, "
+        "predicted_rank, predicted_rank_context, predicted_rank_at")
                .eq("id", student_id).limit(1).execute()).data
-    return {"weakness_map": weakness, "profile": student[0] if student else {}}
+    return {"weakness_map": weakness, "profile": student[0] if student else {},
+            "recent_tests": _recent_results(sb, [student_id])}
+
+
+@app.post("/activity/ping")
+def activity_ping(user=Depends(get_current_user)):
+    """F6: record that the logged-in student is active now (login/app-open signal)."""
+    from datetime import datetime, timezone
+    sb = get_supabase()
+    _log_activity_event(sb, user.get("email"), "login")
+    try:
+        sb.table("students").update(
+            {"last_active": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", _resolve_student_id(user)).execute()
+    except Exception:
+        pass
+    return {"ok": True}
 
 
 @app.post("/profile")
@@ -397,6 +499,205 @@ def review_flashcard(req: ReviewCardRequest, background: BackgroundTasks,
     result = review_card(req.card_id, req.quality)
     background.add_task(_award_activity, _resolve_student_id(user), "flashcard")
     return result
+
+
+# ── F1: 7-day study plan ──────────────────────────────────────────────────────
+@app.get("/student/plan")
+def get_study_plan(user=Depends(get_current_user)):
+    """Latest saved 7-day study plan for the logged-in student."""
+    from agents.study_plan_agent import latest_plan
+    return {"plan": latest_plan(_resolve_student_id(user))}
+
+
+@app.post("/student/plan/generate")
+def generate_study_plan(user=Depends(get_current_user)):
+    """Generate a fresh 7-day plan from the student's weak concepts (Groq)."""
+    from agents.study_plan_agent import build_plan
+    sb = get_supabase()
+    sid = _resolve_student_id(user)
+    row = sb.table("students").select("*").eq("id", sid).limit(1).execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail="No student profile.")
+    return {"plan": build_plan(row[0])}
+
+
+# ── F2: concept dependency map ────────────────────────────────────────────────
+@app.get("/student/concept-map")
+def get_concept_map(user=Depends(get_current_user)):
+    """Tree of the student's weak concepts and their prerequisites (cached edges)."""
+    from graph.knowledge_graph import prerequisites_of
+    sb = get_supabase()
+    sid = _resolve_student_id(user)
+    weak = (sb.table("weakness_map").select("subject, concept, score")
+            .eq("student_id", sid).order("score", desc=False).limit(6).execute()).data or []
+    nodes = [{"concept": w["concept"], "subject": w.get("subject"),
+              "score": w.get("score"), "prerequisites": prerequisites_of(w["concept"])}
+             for w in weak]
+    has_edges = any(n["prerequisites"] for n in nodes)
+    return {"nodes": nodes, "built": has_edges}
+
+
+@app.post("/student/concept-map/build")
+def build_concept_map(user=Depends(get_current_user)):
+    """Infer & cache prerequisites (via LLM) for the student's weak concepts."""
+    from graph.knowledge_graph import link_prerequisites, prerequisites_of
+    sb = get_supabase()
+    sid = _resolve_student_id(user)
+    weak = (sb.table("weakness_map").select("subject, concept, score")
+            .eq("student_id", sid).order("score", desc=False).limit(6).execute()).data or []
+    nodes = []
+    for w in weak:
+        link_prerequisites(w["concept"], subject=w.get("subject"))
+        nodes.append({"concept": w["concept"], "subject": w.get("subject"),
+                      "score": w.get("score"), "prerequisites": prerequisites_of(w["concept"])})
+    return {"nodes": nodes, "built": True}
+
+
+# ── Gamification (F10 leaderboard · F11 badges · F12 challenges) ───────────────
+@app.get("/leaderboard")
+def leaderboard(user=Depends(get_current_user)):
+    """F10: top-10 students by XP within the requester's institute."""
+    sb = get_supabase()
+    sid = _resolve_student_id(user)
+    me = (sb.table("students").select("institute_id").eq("id", sid).limit(1).execute().data) or []
+    inst = _as_uuid(me[0].get("institute_id")) if me else None
+    q = sb.table("students").select("id, name, email, xp_points, streak_days")
+    q = q.eq("institute_id", inst) if inst else q.is_("institute_id", "null")
+    rows = q.order("xp_points", desc=True).limit(10).execute().data or []
+    board = [{
+        "rank": i + 1,
+        "name": r.get("name") or r.get("email") or "Student",
+        "xp": r.get("xp_points") or 0,
+        "streak": r.get("streak_days") or 0,
+        "is_me": r["id"] == sid,
+    } for i, r in enumerate(rows)]
+    return {"leaderboard": board}
+
+
+@app.get("/badges")
+def get_badges(user=Depends(get_current_user)):
+    """F11: badge shelf — re-evaluates + awards, then returns earned/locked state."""
+    sid = _resolve_student_id(user)
+    earned = _award_badges(sid)
+    shelf = [{**b, "earned": b["key"] in earned} for b in BADGE_CATALOG]
+    return {"badges": shelf, "earned_count": len(earned)}
+
+
+def _grade_mcq(questions: list, answers: list) -> tuple:
+    """F12: auto-grade an MCQ challenge by answer_index. Returns (score, total)."""
+    score, total = 0, 0
+    for i, q in enumerate(questions or []):
+        marks = q.get("marks", 4)
+        total += marks
+        ans = answers[i] if i < len(answers) else None
+        if ans is None:
+            continue
+        if ans == q.get("answer_index"):
+            score += marks
+        else:
+            score -= q.get("negative", 1)
+    return max(0, score), total
+
+
+@app.post("/challenge/create")
+def create_challenge(req: CreateChallengeRequest, user=Depends(get_current_user)):
+    """F12: challenge a classmate — generates one shared MCQ test for both to take."""
+    from agents.test_generator import test_generator_node
+    sb = get_supabase()
+    me = _resolve_student_id(user)
+    opp = (sb.table("students").select("id, institute_id")
+           .ilike("email", req.opponent_email.strip()).limit(1).execute().data) or []
+    if not opp:
+        raise HTTPException(status_code=404, detail=f"No classmate found with email '{req.opponent_email}'.")
+    if opp[0]["id"] == me:
+        raise HTTPException(status_code=400, detail="You can't challenge yourself.")
+
+    state = {"student_id": me, "institute_id": opp[0].get("institute_id") or "",
+             "subject": req.subject, "question_type": "mcq",
+             "iteration_count": 0, "conversation_history": []}
+    state = test_generator_node(state, num_questions=req.num_questions)
+    qs = [q for q in (state.get("test_questions") or []) if q.get("options")]
+    if not qs:
+        raise HTTPException(status_code=502, detail="Could not generate a challenge test, try again.")
+
+    row = sb.table("challenges").insert({
+        "challenger_id": me, "opponent_id": opp[0]["id"],
+        "subject": req.subject, "questions": qs, "status": "pending",
+    }).execute().data
+    return {"challenge_id": row[0]["id"] if row else None, "questions_count": len(qs)}
+
+
+@app.get("/challenges")
+def my_challenges(user=Depends(get_current_user)):
+    """F12: all challenges I'm part of, with names, scores and a comparison view."""
+    sb = get_supabase()
+    me = _resolve_student_id(user)
+    rows = (sb.table("challenges").select("*")
+            .or_(f"challenger_id.eq.{me},opponent_id.eq.{me}")
+            .order("created_at", desc=True).limit(30).execute().data) or []
+    ids = {r["challenger_id"] for r in rows} | {r["opponent_id"] for r in rows}
+    names = {}
+    if ids:
+        ns = sb.table("students").select("id, name, email").in_("id", list(ids)).execute().data or []
+        names = {n["id"]: (n.get("name") or n.get("email") or "Student") for n in ns}
+    out = []
+    for r in rows:
+        mine = "challenger" if r["challenger_id"] == me else "opponent"
+        other = "opponent" if mine == "challenger" else "challenger"
+        my_done = r.get(f"{mine}_score") is not None
+        out.append({
+            "id": r["id"], "subject": r.get("subject"), "status": r.get("status"),
+            "questions_count": len(r.get("questions") or []),
+            "my_turn": not my_done,
+            "my_score": r.get(f"{mine}_score"), "my_total": r.get(f"{mine}_total"),
+            "opp_name": names.get(r[f"{other}_id"]),
+            "opp_score": r.get(f"{other}_score"), "opp_total": r.get(f"{other}_total"),
+            "challenger_name": names.get(r["challenger_id"]),
+        })
+    return {"challenges": out}
+
+
+@app.get("/challenge/{challenge_id}/take")
+def take_challenge(challenge_id: str, user=Depends(get_current_user)):
+    """F12: fetch the shared questions to take (answer keys stripped)."""
+    sb = get_supabase()
+    me = _resolve_student_id(user)
+    ch = (sb.table("challenges").select("*").eq("id", challenge_id).limit(1).execute().data) or []
+    if not ch:
+        raise HTTPException(status_code=404, detail="Challenge not found.")
+    c = ch[0]
+    if me not in (c["challenger_id"], c["opponent_id"]):
+        raise HTTPException(status_code=403, detail="Not your challenge.")
+    mine = "challenger" if me == c["challenger_id"] else "opponent"
+    if c.get(f"{mine}_score") is not None:
+        raise HTTPException(status_code=400, detail="You've already taken this challenge.")
+    qs = [{k: v for k, v in q.items() if k != "answer_index"} for q in (c.get("questions") or [])]
+    return {"id": c["id"], "subject": c.get("subject"), "questions": qs}
+
+
+@app.post("/challenge/submit")
+def submit_challenge(req: SubmitChallengeRequest, background: BackgroundTasks,
+                     user=Depends(get_current_user)):
+    """F12: grade my attempt; mark complete once both sides have played."""
+    sb = get_supabase()
+    me = _resolve_student_id(user)
+    ch = (sb.table("challenges").select("*").eq("id", req.challenge_id).limit(1).execute().data) or []
+    if not ch:
+        raise HTTPException(status_code=404, detail="Challenge not found.")
+    c = ch[0]
+    if me not in (c["challenger_id"], c["opponent_id"]):
+        raise HTTPException(status_code=403, detail="Not your challenge.")
+    mine = "challenger" if me == c["challenger_id"] else "opponent"
+    if c.get(f"{mine}_score") is not None:
+        raise HTTPException(status_code=400, detail="You've already taken this challenge.")
+
+    score, total = _grade_mcq(c.get("questions") or [], req.answers or [])
+    other = "opponent" if mine == "challenger" else "challenger"
+    update = {f"{mine}_score": score, f"{mine}_total": total,
+              "status": "complete" if c.get(f"{other}_score") is not None else "awaiting_opponent"}
+    sb.table("challenges").update(update).eq("id", req.challenge_id).execute()
+    background.add_task(_award_activity, me, "test")
+    return {"score": score, "total": total, "status": update["status"]}
 
 
 # ── Teacher / admin ───────────────────────────────────────────────────────────
@@ -503,6 +804,138 @@ def teacher_submissions(institute_id: str = "", user=Depends(require_role("teach
     return {"submissions": tests}
 
 
+@app.get("/teacher/students")
+def teacher_students(institute_id: str = "", user=Depends(require_role("teacher", "admin"))):
+    """Roster of students (name + email) so a teacher can pick one to generate a test for.
+
+    Filters by institute when a valid institute_id is given; otherwise returns all
+    students (single-institute / demo setups where students have no institute).
+    """
+    sb = get_supabase()
+    q = (sb.table("students")
+         .select("id, name, email, target_exam, institute_id")
+         .order("name"))
+    inst = _as_uuid(institute_id)
+    if inst:
+        q = q.eq("institute_id", inst)
+    students = q.limit(500).execute().data or []
+    return {"students": students}
+
+
+# ── F13: generate one personalized test per student in a class ─────────────────
+@app.post("/teacher/tests/generate-class")
+def generate_class_tests(req: GenerateClassTestRequest, user=Depends(require_role("teacher", "admin"))):
+    """F13: loop the class and generate a weakness-targeted test for each student."""
+    from agents.test_generator import test_generator_node
+    sb = get_supabase()
+    inst = _as_uuid(req.institute_id)
+    q = sb.table("students").select("id, name, email, institute_id")
+    q = q.eq("institute_id", inst) if inst else q.is_("institute_id", "null")
+    students = q.limit(100).execute().data or []
+
+    results = []
+    for s in students:
+        label = s.get("name") or s.get("email") or s["id"]
+        try:
+            state = {"student_id": s["id"], "institute_id": s.get("institute_id") or "",
+                     "subject": req.subject, "question_type": "mcq",
+                     "iteration_count": 0, "conversation_history": []}
+            state = test_generator_node(state, num_questions=req.num_questions)
+            qs = state.get("test_questions") or []
+            if not qs:
+                results.append({"student": label, "ok": False, "reason": "no questions generated"})
+                continue
+            sb.table("tests").insert({
+                "student_id": s["id"], "institute_id": _as_uuid(s.get("institute_id")),
+                "subject": req.subject, "questions": qs,
+                "status": "pending", "teacher_approved": False,
+            }).execute()
+            results.append({"student": label, "ok": True, "questions": len(qs)})
+        except Exception as e:
+            results.append({"student": label, "ok": False, "reason": str(e)})
+
+    return {"students": len(students),
+            "generated": sum(1 for r in results if r["ok"]), "results": results}
+
+
+# ── F15: month-vs-month class scores ──────────────────────────────────────────
+@app.get("/teacher/monthly-scores")
+def teacher_monthly_scores(institute_id: str = "", student_id: str = "", months: int = 6,
+                           user=Depends(require_role("teacher", "admin"))):
+    """F15: average evaluated-test score (%) per calendar month.
+
+    Scoped to one student when `student_id` is given, else the whole class.
+    """
+    from datetime import datetime, timezone, timedelta
+    sb = get_supabase()
+    since = (datetime.now(timezone.utc) - timedelta(days=months * 31)).isoformat()
+    q = (sb.table("tests").select("score, total_marks, created_at")
+         .eq("status", "evaluated").gte("created_at", since))
+    sid = _as_uuid(student_id)
+    if sid:
+        q = q.eq("student_id", sid)
+    else:
+        inst = _as_uuid(institute_id)
+        if inst:
+            q = q.eq("institute_id", inst)
+    rows = q.limit(5000).execute().data or []
+
+    buckets = {}
+    for r in rows:
+        if not r.get("total_marks"):
+            continue
+        try:
+            dt = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        buckets.setdefault(dt.strftime("%Y-%m"), []).append(r["score"] / r["total_marks"] * 100)
+    monthly = [{"month": k, "avg_pct": round(sum(v) / len(v), 1), "tests": len(v)}
+               for k, v in sorted(buckets.items())]
+    return {"monthly": monthly}
+
+
+# ── F3: doubt clusters ────────────────────────────────────────────────────────
+@app.get("/teacher/doubt-clusters")
+def teacher_doubt_clusters(institute_id: str = "", user=Depends(require_role("teacher", "admin"))):
+    """Top clusters of similar student doubts (computed nightly)."""
+    from agents.doubt_cluster_agent import top_clusters
+    return {"clusters": top_clusters(institute_id)}
+
+
+@app.post("/teacher/doubt-clusters/build")
+def teacher_build_doubt_clusters(user=Depends(require_role("teacher", "admin"))):
+    """Recompute doubt clusters now (also runs nightly via the scheduler)."""
+    from agents.doubt_cluster_agent import cluster_doubts
+    return cluster_doubts(days=7)
+
+
+@app.post("/teacher/inactivity-check")
+def run_inactivity_check(user=Depends(require_role("teacher", "admin"))):
+    """F7: run the inactivity / skipped-test check now (also runs nightly at 9PM).
+
+    Emails teacher+parent for each flagged student and returns the reasons so the
+    rule can be verified even if email delivery isn't configured.
+    """
+    from agents.inactivity_alert_agent import run_nightly
+    return run_nightly()
+
+
+@app.get("/teacher/activity-heatmap")
+def teacher_activity_heatmap(institute_id: str = "", days: int = 14,
+                             user=Depends(require_role("teacher", "admin"))):
+    """F6: 24-hour activity heatmap (IST) for the teacher's whole class.
+
+    The class roster is resolved by institute, then activity is matched by the
+    students' emails (the tracking key).
+    """
+    sb = get_supabase()
+    iid = _as_uuid(institute_id)
+    q = sb.table("students").select("email")
+    q = q.eq("institute_id", iid) if iid else q.is_("institute_id", "null")
+    emails = [s["email"] for s in (q.execute().data or []) if s.get("email")]
+    return _activity_heatmap(emails=emails, days=days)
+
+
 @app.post("/teacher/alerts/read")
 def mark_alert_read(req: MarkAlertRequest, user=Depends(require_role("teacher", "admin"))):
     sb = get_supabase()
@@ -537,13 +970,69 @@ def parent_report(user=Depends(require_role("parent"))):
                   .eq("student_id", student["id"]).order("week_start", desc=True)
                   .limit(1).execute().data)
         children.append({
+            "student_id": student["id"],
             "student_name": student.get("name"),
             "summary": _week_summary(sb, student["id"]),
             "latest_report": latest[0]["report_text"] if latest else None,
+            "recent_tests": _recent_results(sb, [student["id"]]),
+            # F9: goal + progress toward it (from the F5 predicted rank).
+            "predicted_rank": student.get("predicted_rank"),
+            "target_college": student.get("target_college"),
+            "target_rank": student.get("target_rank"),
+            "goal_progress": _goal_progress(student.get("predicted_rank"), student.get("target_rank")),
         })
 
     first = children[0]
     return {**first, "children": children}
+
+
+@app.post("/parent/goal")
+def set_parent_goal(req: ParentGoalRequest, user=Depends(require_role("parent"))):
+    """F9: parent sets a target college + rank for one of their children."""
+    sb = get_supabase()
+    parent_email = (user.get("email") or "").strip().lower()
+    child = (sb.table("students").select("id, predicted_rank")
+             .eq("id", req.student_id).eq("parent_email", parent_email)
+             .limit(1).execute().data) or []
+    if not child:
+        raise HTTPException(status_code=403, detail="That student is not linked to your account.")
+    update = {}
+    if req.target_college is not None:
+        update["target_college"] = req.target_college.strip() or None
+    if req.target_rank is not None:
+        update["target_rank"] = req.target_rank
+    if update:
+        sb.table("students").update(update).eq("id", req.student_id).execute()
+    return {"ok": True, **update,
+            "goal_progress": _goal_progress(child[0].get("predicted_rank"), update.get("target_rank", req.target_rank))}
+
+
+@app.post("/parent/report/send")
+def parent_report_send_now(user=Depends(require_role("parent"))):
+    """F8: build + email this week's report for the parent's children right now
+    (the same report the Sunday 8PM job sends). Useful for testing/preview."""
+    from agents.parent_report_agent import build_report
+    sb = get_supabase()
+    parent_email = (user.get("email") or "").strip().lower()
+    students = (sb.table("students").select("*")
+                .eq("parent_email", parent_email).execute().data) or []
+    results = []
+    for s in students:
+        r = build_report(s)
+        results.append({"student_name": s.get("name"),
+                        "delivered": r["delivery"].get("ok"),
+                        "channels": r.get("channels")})
+    return {"children": len(students), "results": results}
+
+
+@app.get("/parent/activity-heatmap")
+def parent_activity_heatmap(days: int = 14, user=Depends(require_role("parent"))):
+    """F6: 24-hour activity heatmap (IST) across the parent's linked children."""
+    sb = get_supabase()
+    parent_email = (user.get("email") or "").strip().lower()
+    students = (sb.table("students").select("email")
+                .eq("parent_email", parent_email).execute().data) or []
+    return _activity_heatmap(emails=[s["email"] for s in students], days=days)
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
@@ -572,13 +1061,8 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
     def _active(s):
-        la = s.get("last_active")
-        if not la:
-            return False
-        try:
-            return datetime.fromisoformat(str(la).replace("Z", "+00:00")) >= week_ago
-        except Exception:
-            return False
+        dt = _parse_dt(s.get("last_active"))
+        return bool(dt and dt >= week_ago)
 
     active = sum(1 for s in students if _active(s))
 
@@ -592,7 +1076,7 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
         tq = tq.eq("institute_id", iid)
     tests_week = tq.execute().count or 0
 
-    renewal_pct = round((active / total) * 100, 1) if total else 0.0
+    engagement_rate = round((active / total) * 100, 1) if total else 0.0
 
     # ── All auth accounts, grouped by role ─────────────────────────────────
     accounts = {"student": [], "teacher": [], "parent": [], "admin": []}
@@ -620,13 +1104,8 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
         "active_students": active,
         "at_risk_count": at_risk,
         "tests_week": tests_week,
-        "renewal_pct": renewal_pct,
-        "engagement": [],  # wire up a weekly rollup table later
-        "revenue_signals": [
-            {"label": "Total enrolled", "value": total},
-            {"label": "Engaged (7d)", "value": active},
-            {"label": "Predicted renewals", "value": round(total * renewal_pct / 100)},
-        ],
+        "engagement_rate": engagement_rate,  # active/total % — a real, computed metric
+        "engagement": _weekly_engagement(sb, [s["id"] for s in students]),
         "counts": {
             "students": len(accounts["student"]),
             "teachers": len(accounts["teacher"]),
@@ -634,6 +1113,8 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
             "admins": len(accounts["admin"]),
         },
         "students": students,
+        "recent_results": _recent_results(sb, [s["id"] for s in students],
+                                          limit=20, with_names=True),
         "teachers": accounts["teacher"],
         "parents": accounts["parent"],
         "admins": accounts["admin"],
@@ -658,6 +1139,85 @@ def _as_uuid(value) -> str | None:
         return None
 
 
+def _parse_dt(value):
+    """Parse a stored timestamp to a tz-aware datetime (naive values are treated as
+    UTC). Returns None if unparseable. Avoids the naive-vs-aware comparison crash."""
+    from datetime import datetime, timezone
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def _weekly_engagement(sb, student_ids: list[str], weeks: int = 6) -> list[dict]:
+    """Real weekly active-student counts over the last `weeks` weeks.
+
+    A student is 'active' in a week if they asked a doubt or took a test that week.
+    Returns a continuous series [{week, active}] so the chart never has gaps.
+    """
+    from datetime import datetime, timezone, timedelta
+    ids = [i for i in (student_ids or []) if i]
+    if not ids:
+        return []
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(weeks=weeks)
+    buckets = {}  # Monday-of-week date -> set(student_id)
+    for tbl in ("doubt_logs", "tests"):
+        try:
+            rows = (sb.table(tbl).select("student_id, created_at")
+                    .in_("student_id", ids)
+                    .gte("created_at", start.isoformat()).execute().data) or []
+        except Exception as e:
+            print(f"[engagement] {tbl} fetch failed: {e}")
+            rows = []
+        for r in rows:
+            dt = _parse_dt(r.get("created_at"))
+            if not dt:
+                continue
+            monday = (dt - timedelta(days=dt.weekday())).date()
+            buckets.setdefault(monday, set()).add(r.get("student_id"))
+    this_monday = (now - timedelta(days=now.weekday())).date()
+    series = []
+    for i in range(weeks - 1, -1, -1):
+        wk = this_monday - timedelta(weeks=i)
+        series.append({"week": wk.strftime("%b %d"), "active": len(buckets.get(wk, set()))})
+    return series
+
+
+def _recent_results(sb, student_ids: list[str], limit: int = 10,
+                    with_names: bool = False) -> list[dict]:
+    """Recent evaluated test results for the given students, newest first.
+
+    Returns each test's score, total and computed percent so the student, parent
+    and admin dashboards can all show the same result once a test is submitted.
+    Set with_names=True (admin/multi-student views) to attach the student's name.
+    """
+    ids = [i for i in (student_ids or []) if i]
+    if not ids:
+        return []
+    rows = (sb.table("tests")
+            .select("id, student_id, subject, score, total_marks, status, created_at")
+            .in_("student_id", ids)
+            .eq("status", "evaluated")
+            .order("created_at", desc=True)
+            .limit(limit).execute().data) or []
+    names = {}
+    if with_names:
+        srows = (sb.table("students").select("id, name, email")
+                 .in_("id", ids).execute().data) or []
+        names = {s["id"]: s for s in srows}
+    for t in rows:
+        t["percent"] = (round((t.get("score") or 0) / t["total_marks"] * 100)
+                        if t.get("total_marks") else None)
+        if with_names:
+            s = names.get(t.get("student_id")) or {}
+            t["student_name"] = s.get("name") or s.get("email") or "Unknown"
+    return rows
+
+
 # XP granted per activity — keeps the progress page's gamification meaningful.
 XP_REWARDS = {"doubt": 10, "test": 50, "flashcard": 5}
 
@@ -676,7 +1236,7 @@ def _award_activity(student_id: str, kind: str) -> None:
     from datetime import datetime, timedelta, timezone
     try:
         sb = get_supabase()
-        row = (sb.table("students").select("xp_points, streak_days, last_active")
+        row = (sb.table("students").select("xp_points, streak_days, last_active, email")
                .eq("id", student_id).limit(1).execute()).data
         cur = row[0] if row else {}
 
@@ -703,8 +1263,133 @@ def _award_activity(student_id: str, kind: str) -> None:
             "streak_days": new_streak,
             "last_active": datetime.now(timezone.utc).isoformat(),
         }).eq("id", student_id).execute()
+        # F6: timestamped event for the 24-hour activity heatmap (tracked by email).
+        _log_activity_event(sb, cur.get("email"), kind)
+        # F11: re-check badge criteria after each activity (best-effort).
+        _award_badges(student_id)
     except Exception as e:
         print(f"[gamify] award failed for {student_id}: {e}")
+
+
+# F11 — badge catalog (icon names map to frontend Icon component).
+BADGE_CATALOG = [
+    {"key": "first_doubt", "name": "Curious Mind", "desc": "Asked your first doubt", "icon": "doubt"},
+    {"key": "streak_7",    "name": "On Fire",      "desc": "7-day study streak",     "icon": "streak"},
+    {"key": "doubts_100",  "name": "Question Master", "desc": "Asked 100 doubts",    "icon": "doubts"},
+    {"key": "score_90",    "name": "Ace",          "desc": "Scored 90%+ on a test",  "icon": "trophy"},
+]
+
+
+def _evaluate_badges(sb, student_id: str) -> set:
+    """F11: which badge keys the student currently qualifies for (from live data)."""
+    earned = set()
+    try:
+        prof = (sb.table("students").select("streak_days")
+                .eq("id", student_id).limit(1).execute().data) or []
+        if prof and (prof[0].get("streak_days") or 0) >= 7:
+            earned.add("streak_7")
+        dcount = (sb.table("doubt_logs").select("id", count="exact")
+                  .eq("student_id", student_id).execute()).count or 0
+        if dcount >= 1:
+            earned.add("first_doubt")
+        if dcount >= 100:
+            earned.add("doubts_100")
+        tests = (sb.table("tests").select("score, total_marks")
+                 .eq("student_id", student_id).eq("status", "evaluated").execute().data) or []
+        if any(t.get("total_marks") and (t["score"] / t["total_marks"]) >= 0.9 for t in tests):
+            earned.add("score_90")
+    except Exception as e:
+        print(f"[badges] evaluate failed: {e}")
+    return earned
+
+
+def _award_badges(student_id: str) -> set:
+    """F11: persist any newly-earned badges; returns the full earned set."""
+    sb = get_supabase()
+    earned = _evaluate_badges(sb, student_id)
+    try:
+        already = {b["badge_key"] for b in (sb.table("badges").select("badge_key")
+                   .eq("student_id", student_id).execute().data or [])}
+        for key in earned - already:
+            try:
+                sb.table("badges").insert({"student_id": student_id, "badge_key": key}).execute()
+            except Exception as e:
+                print(f"[badges] insert {key} failed: {e}")
+    except Exception as e:
+        print(f"[badges] award failed: {e}")
+    return earned
+
+
+def _log_activity_event(sb, student_email: str, kind: str) -> None:
+    """F6: append a timestamped row to activity_log, keyed by student email.
+
+    Best-effort — a logging failure must never break the caller's response.
+    """
+    if not student_email:
+        return
+    try:
+        sb.table("activity_log").insert({
+            "student_email": (student_email or "").strip().lower(),
+            "kind": kind,
+        }).execute()
+    except Exception as e:
+        print(f"[activity] log failed for {student_email}: {e}")
+
+
+# IST (Asia/Kolkata) — activity is bucketed by local hour so the heatmap reads
+# naturally for Indian students/teachers, even though timestamps are stored in UTC.
+from datetime import timezone as _tz, timedelta as _td
+_IST = _tz(_td(hours=5, minutes=30))
+
+
+def _rank_band_midpoint(text):
+    """F9: pull a single number out of a predicted-rank band like 'AIR 8,000 - 12,000'."""
+    import re
+    if not text:
+        return None
+    nums = [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", str(text))]
+    nums = [n for n in nums if n > 0]
+    return sum(nums) / len(nums) if nums else None
+
+
+def _goal_progress(predicted_text, target_rank):
+    """F9: progress toward the goal rank (lower AIR is better). Returns 0–100 or None."""
+    cur = _rank_band_midpoint(predicted_text)
+    if not cur or not target_rank:
+        return None
+    if cur <= target_rank:
+        return 100
+    return max(0, min(100, round(target_rank / cur * 100)))
+
+
+def _activity_heatmap(emails=None, days: int = 14) -> dict:
+    """Aggregate activity_log into 24 hour-of-day buckets (IST) over `days`.
+
+    Scoped to the given list of student `emails` (a class roster or a parent's
+    children). Returns {hours: [24 ints], total, days}.
+    """
+    from datetime import datetime
+    buckets = [0] * 24
+    emails = [e.strip().lower() for e in (emails or []) if e]
+    if not emails:
+        return {"hours": buckets, "total": 0, "days": days}
+    try:
+        sb = get_supabase()
+        since = (datetime.now(_tz.utc) - _td(days=days)).isoformat()
+        rows = (sb.table("activity_log").select("created_at")
+                .in_("student_email", emails)
+                .gte("created_at", since).limit(50000).execute().data) or []
+        for r in rows:
+            try:
+                dt = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_tz.utc)
+                buckets[dt.astimezone(_IST).hour] += 1
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[activity] heatmap failed: {e}")
+    return {"hours": buckets, "total": sum(buckets), "days": days}
 
 
 def _resolve_student_id(user: dict) -> str:
