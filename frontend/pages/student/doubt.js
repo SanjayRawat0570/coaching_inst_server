@@ -123,6 +123,9 @@ export default function DoubtPage() {
         {messages.map((m, i) => {
           const isUser = m.role === "user";
           const isLast = i === messages.length - 1;
+          const { body, confidence } = isUser
+            ? { body: m.content, confidence: null }
+            : splitConfidence(m.content);
           return (
             <div key={i} className={"flex items-end gap-2 " + (isUser ? "flex-row-reverse" : "")}>
               <span
@@ -133,21 +136,24 @@ export default function DoubtPage() {
               >
                 <Icon name={isUser ? "user" : "bot"} size={16} className={isUser ? "text-white" : ""} />
               </span>
-              <div
-                className={
-                  "px-4 py-2.5 rounded-2xl max-w-[80%] whitespace-pre-wrap leading-relaxed shadow-sm " +
-                  (isUser
-                    ? "bg-brand-grad text-white rounded-br-sm shadow-glow"
-                    : "bg-slate-100 text-slate-800 dark:bg-ink-700 dark:text-slate-100 rounded-bl-sm")
-                }
-              >
-                {m.content || (streaming && isLast ? (
-                  <span className="inline-flex gap-1 py-1">
-                    <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "0ms" }} />
-                    <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "150ms" }} />
-                    <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "300ms" }} />
-                  </span>
-                ) : "")}
+              <div className={"flex flex-col gap-1 max-w-[80%] " + (isUser ? "items-end" : "items-start")}>
+                <div
+                  className={
+                    "px-4 py-2.5 rounded-2xl whitespace-pre-wrap leading-relaxed shadow-sm " +
+                    (isUser
+                      ? "bg-brand-grad text-white rounded-br-sm shadow-glow"
+                      : "bg-slate-100 text-slate-800 dark:bg-ink-700 dark:text-slate-100 rounded-bl-sm")
+                  }
+                >
+                  {body || (streaming && isLast ? (
+                    <span className="inline-flex gap-1 py-1">
+                      <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </span>
+                  ) : "")}
+                </div>
+                {!isUser && confidence != null && <ConfidenceBadge value={confidence} />}
               </div>
             </div>
           );
@@ -192,5 +198,28 @@ export default function DoubtPage() {
         </button>
       </div>
     </Shell>
+  );
+}
+
+// F16 — pull "CONFIDENCE: XX%" off the end of an answer and return the clean body.
+function splitConfidence(text) {
+  if (!text) return { body: text, confidence: null };
+  const m = text.match(/CONFIDENCE:\s*(\d{1,3})\s*%/i);
+  if (!m) return { body: text, confidence: null };
+  return {
+    body: text.replace(m[0], "").trimEnd(),
+    confidence: Math.min(100, parseInt(m[1], 10)),
+  };
+}
+
+function ConfidenceBadge({ value }) {
+  const tone =
+    value >= 80 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+    : value >= 50 ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
+    : "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30";
+  return (
+    <span className={"inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border " + tone}>
+      <Icon name="check" size={12} /> {value}% confident
+    </span>
   );
 }

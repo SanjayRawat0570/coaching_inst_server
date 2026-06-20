@@ -125,7 +125,7 @@ const LEGEND = [
 function Section({ kicker, title, children }) {
   return (
     <section className="mt-14">
-      <p className="text-xs font-semibold uppercase tracking-widest text-brand dark:text-indigo-400">{kicker}</p>
+      <p className="text-xs font-semibold uppercase tracking-widest text-brand dark:text-violet-400">{kicker}</p>
       <h2 className="text-2xl font-bold tracking-tight mt-1 mb-5">{title}</h2>
       {children}
     </section>
@@ -293,7 +293,7 @@ export default function Architecture() {
         <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2">
             <span className="grid place-items-center h-8 w-8 rounded-lg bg-brand text-white"><GraduationCap size={17} /></span>
-            <span className="font-semibold tracking-tight">Smart<span className="text-brand dark:text-indigo-400">Coaching</span></span>
+            <span className="font-semibold tracking-tight">Smart<span className="text-brand dark:text-violet-400">Coaching</span></span>
           </Link>
           <div className="flex items-center gap-2">
             <Link href="/" className="btn-ghost text-sm"><ArrowLeft size={15} /> Back to app</Link>
@@ -307,7 +307,7 @@ export default function Architecture() {
         <div className="pt-12 pb-2">
           <span className="badge-brand">System Architecture</span>
           <h1 className="text-4xl md:text-5xl font-bold tracking-tight mt-4 max-w-3xl">
-            How <span className="text-brand dark:text-indigo-400">SmartCoaching</span> is built
+            How <span className="text-brand dark:text-violet-400">SmartCoaching</span> is built
           </h1>
           <p className="muted mt-4 max-w-2xl text-lg">
             An agentic tutoring platform on a free stack — FastAPI + LangGraph orchestration,
@@ -316,7 +316,7 @@ export default function Architecture() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-8">
             {STATS.map((s) => (
               <div key={s.l} className="card p-5 text-center card-hover">
-                <div className="text-3xl font-bold text-brand dark:text-indigo-400">{s.v}</div>
+                <div className="text-3xl font-bold text-brand dark:text-violet-400">{s.v}</div>
                 <div className="muted text-xs mt-1">{s.l}</div>
               </div>
             ))}

@@ -16,16 +16,16 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* ── Light (default) ── */
+/* ── Light (default) — warm off-white with a faint violet cast ── */
 body {
-  color: #0f172a;
-  background-color: #f8fafc;
+  color: #1a1726;
+  background-color: #f7f6fb;
 }
 
-/* ── Dark ── */
+/* ── Dark — deep plum ── */
 html.dark body {
-  color: #e6eaf2;
-  background-color: #0b1120;
+  color: #e7e4f0;
+  background-color: #0e0b16;
 }
 
 a {
@@ -41,23 +41,23 @@ h1, h2, h3 {
 /* Scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #d4dae6 transparent;
+  scrollbar-color: #d8d3e6 transparent;
 }
 html.dark * {
-  scrollbar-color: #232f4d transparent;
+  scrollbar-color: #241d3a transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #d4dae6;
+  background: #d8d3e6;
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 html.dark *::-webkit-scrollbar-thumb {
-  background: #1c2742;
+  background: #241d3a;
   background-clip: content-box;
 }
 
@@ -81,7 +81,7 @@ html.dark *::-webkit-scrollbar-thumb {
   /* Icon tile — consistent container for line icons */
   .icon-tile {
     @apply grid place-items-center rounded-xl text-brand
-           bg-brand/[0.08] dark:bg-brand/[0.14] dark:text-indigo-300;
+           bg-brand/[0.08] dark:bg-brand/[0.14] dark:text-violet-300;
   }
 
   /* Buttons */
@@ -91,7 +91,10 @@ html.dark *::-webkit-scrollbar-thumb {
            focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 focus-visible:ring-offset-2
            focus-visible:ring-offset-white dark:focus-visible:ring-offset-ink-900;
   }
-  .btn-primary { @apply btn text-white bg-brand shadow-soft hover:bg-brand-dark active:bg-brand-dark; }
+  .btn-primary {
+    @apply btn text-white bg-brand bg-brand-grad shadow-brand transition
+           hover:shadow-brand-lg hover:brightness-[1.07] active:brightness-95;
+  }
   .btn-ghost {
     @apply btn border border-slate-200 bg-white/60 text-slate-700 hover:bg-slate-100 hover:border-slate-300
            dark:bg-white/[0.03] dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/[0.07];
@@ -111,7 +114,7 @@ html.dark *::-webkit-scrollbar-thumb {
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
-  .badge-brand { @apply badge bg-brand/10 text-brand border border-brand/20 dark:bg-brand/15 dark:text-indigo-300 dark:border-brand/25; }
+  .badge-brand { @apply badge bg-brand/10 text-brand border border-brand/20 dark:bg-brand/15 dark:text-violet-300 dark:border-brand/25; }
   .badge-cyan  { @apply badge bg-cyan-500/10 text-cyan-600 border border-cyan-500/20 dark:bg-neon-cyan/10 dark:text-neon-cyan dark:border-neon-cyan/25; }
   .badge-green { @apply badge bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 dark:text-emerald-300 dark:border-emerald-400/25; }
   .badge-amber { @apply badge bg-amber-500/10 text-amber-600 border border-amber-500/20 dark:text-amber-300 dark:border-amber-400/25; }
@@ -119,8 +122,10 @@ html.dark *::-webkit-scrollbar-thumb {
   /* Text helpers */
   .h-section { @apply text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-100; }
   .muted { @apply text-slate-500 dark:text-slate-400; }
-  /* Was a gradient; now a solid brand accent for a calmer, professional look. */
-  .grad-text { @apply text-brand dark:text-indigo-400; }
+  /* Premium clipped-gradient accent for headline highlights. */
+  .grad-text {
+    @apply bg-text-grad bg-clip-text text-transparent;
+  }
 
   /* Stat tile — label, big value, optional trend */
   .stat-value { @apply text-[1.75rem] leading-tight font-bold tracking-tight tabular-nums; }
@@ -162,18 +167,20 @@ html.dark *::-webkit-scrollbar-thumb {
 /* Premium hero backdrop: faint dot grid + a soft indigo light from top.
    Subtle enough to read as texture, not decoration. */
 .hero-bg {
-  background-color: #f8fafc;
+  background-color: #f7f6fb;
   background-image:
-    radial-gradient(820px 380px at 50% -8%, rgba(79, 70, 229, 0.10), transparent 70%),
-    radial-gradient(circle at 1px 1px, rgba(79, 70, 229, 0.06) 1px, transparent 0);
-  background-size: 100% 100%, 22px 22px;
+    radial-gradient(900px 400px at 78% -12%, rgba(232, 121, 249, 0.10), transparent 70%),
+    radial-gradient(820px 380px at 28% -8%, rgba(124, 58, 237, 0.12), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(124, 58, 237, 0.06) 1px, transparent 0);
+  background-size: 100% 100%, 100% 100%, 22px 22px;
 }
 html.dark .hero-bg {
-  background-color: #0b1120;
+  background-color: #0e0b16;
   background-image:
-    radial-gradient(820px 380px at 50% -8%, rgba(99, 102, 241, 0.16), transparent 70%),
+    radial-gradient(900px 400px at 78% -12%, rgba(232, 121, 249, 0.14), transparent 70%),
+    radial-gradient(820px 380px at 28% -8%, rgba(139, 92, 246, 0.18), transparent 70%),
     radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
-  background-size: 100% 100%, 22px 22px;
+  background-size: 100% 100%, 100% 100%, 22px 22px;
 }
 
 /* Empty-state wrapper */
@@ -183,6 +190,6 @@ html.dark .hero-bg {
   }
   .empty-state .icon {
     @apply grid place-items-center h-14 w-14 rounded-2xl bg-brand/[0.08] text-brand mb-4
-           dark:bg-brand/[0.14] dark:text-indigo-300;
+           dark:bg-brand/[0.14] dark:text-violet-300;
   }
 }

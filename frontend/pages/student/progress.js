@@ -129,7 +129,7 @@ export default function ProgressPage() {
       ) : (
         <div className="grid md:grid-cols-3 gap-4">
           {/* F5 — predicted AIR, the hero number */}
-          <div className="card card-hover p-5 md:col-span-3 bg-gradient-to-br from-brand/5 to-transparent dark:from-indigo-500/10">
+          <div className="card card-hover p-5 md:col-span-3 bg-gradient-to-br from-brand/5 to-transparent dark:from-violet-500/10">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="stat-label flex items-center gap-2">
@@ -137,7 +137,7 @@ export default function ProgressPage() {
                 </p>
                 {data.profile?.predicted_rank ? (
                   <>
-                    <p className="text-4xl md:text-5xl font-bold tracking-tight text-brand dark:text-indigo-400 mt-2 tabular-nums">
+                    <p className="text-4xl md:text-5xl font-bold tracking-tight text-brand dark:text-violet-400 mt-2 tabular-nums">
                       {data.profile.predicted_rank}
                     </p>
                     {data.profile?.predicted_rank_context && (
@@ -191,7 +191,7 @@ export default function ProgressPage() {
                   <span className="icon-tile h-10 w-10 shrink-0"><Icon name="target" /></span>
                 </div>
                 <button
-                  className="text-brand dark:text-indigo-400 text-xs mt-2 font-medium hover:underline"
+                  className="text-brand dark:text-violet-400 text-xs mt-2 font-medium hover:underline"
                   onClick={() => {
                     setExamInput(data.profile?.target_exam || "");
                     setExamEdit(true);
@@ -295,7 +295,7 @@ export default function ProgressPage() {
                     <span className="flex items-center gap-1 text-amber-500 text-xs">
                       <Icon name="streak" size={13} /> {row.streak}
                     </span>
-                    <span className="font-bold tabular-nums text-brand dark:text-indigo-400 w-20 text-right">
+                    <span className="font-bold tabular-nums text-brand dark:text-violet-400 w-20 text-right">
                       {row.xp.toLocaleString()} XP
                     </span>
                   </div>
@@ -327,7 +327,7 @@ export default function ProgressPage() {
                   {(plan.days || []).map((d, i) => (
                     <div key={i} className="panel p-3">
                       <p className="text-sm font-semibold">{d.day}</p>
-                      <p className="text-xs text-brand dark:text-indigo-400 mb-1.5">{d.focus}</p>
+                      <p className="text-xs text-brand dark:text-violet-400 mb-1.5">{d.focus}</p>
                       <ul className="space-y-1">
                         {(d.slots || []).map((s, j) => (
                           <li key={j} className="muted text-xs flex gap-1.5"><span>•</span>{s}</li>
@@ -436,7 +436,7 @@ export default function ProgressPage() {
                     ) : (
                       <button
                         onClick={() => setRevealed({ ...revealed, [c.id]: true })}
-                        className="mt-2 text-brand dark:text-indigo-400 text-sm font-medium hover:underline"
+                        className="mt-2 text-brand dark:text-violet-400 text-sm font-medium hover:underline"
                       >
                         Show answer
                       </button>

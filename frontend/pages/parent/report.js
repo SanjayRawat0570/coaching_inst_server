@@ -183,7 +183,7 @@ function GoalCard({ child }) {
           <Icon name="trophy" size={16} /> Goal
         </h2>
         {!editing && (
-          <button onClick={() => setEditing(true)} className="text-brand dark:text-indigo-400 text-xs font-medium hover:underline">
+          <button onClick={() => setEditing(true)} className="text-brand dark:text-violet-400 text-xs font-medium hover:underline">
             Edit goal
           </button>
         )}
@@ -215,7 +215,7 @@ function GoalCard({ child }) {
               <p className="text-xl font-bold tracking-tight">{college || "—"}</p>
               <p className="muted text-sm">Target AIR {rank ? Number(rank).toLocaleString() : "—"}</p>
             </div>
-            <p className="text-2xl font-bold text-brand dark:text-indigo-400 tabular-nums">{pct}%</p>
+            <p className="text-2xl font-bold text-brand dark:text-violet-400 tabular-nums">{pct}%</p>
           </div>
           <div className="h-3 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
             <div className="h-full rounded-full bg-brand-grad transition-all" style={{ width: `${pct}%` }} />

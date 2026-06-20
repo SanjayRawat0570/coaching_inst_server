@@ -18,6 +18,22 @@ import { supabase } from "../../lib/supabase";
 export default function AdminAnalytics() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [logs, setLogs] = useState([]);
+  const [actions, setActions] = useState([]);
+  const [auditAction, setAuditAction] = useState("");
+  const [auditQ, setAuditQ] = useState("");
+
+  async function loadAudit() {
+    try {
+      const res = await api(
+        `/admin/audit-logs?action=${encodeURIComponent(auditAction)}&q=${encodeURIComponent(auditQ)}`
+      );
+      setLogs(res.logs || []);
+      setActions(res.actions || []);
+    } catch (e) {
+      console.error("audit logs failed", e);
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -34,6 +50,9 @@ export default function AdminAnalytics() {
       }
     })();
   }, []);
+
+  // F18: (re)load audit logs when the action filter changes.
+  useEffect(() => { loadAudit(); }, [auditAction]);
 
   return (
     <Shell requireRole="admin" title="Institute Analytics">
@@ -134,6 +153,59 @@ export default function AdminAnalytics() {
             <AccountList title="Parents" iconName="parents" rows={data.parents} />
           </div>
 
+          {/* F18 — audit trail */}
+          <div className="card p-5 overflow-x-auto">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <h2 className="font-semibold flex items-center gap-2">
+                <Icon name="alert" size={16} /> Audit log
+                {logs.length > 0 && <span className="badge-brand">{logs.length}</span>}
+              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  className="input text-sm py-1.5 max-w-[200px]"
+                  value={auditAction}
+                  onChange={(e) => setAuditAction(e.target.value)}
+                >
+                  <option value="">All actions</option>
+                  {actions.map((a) => (
+                    <option key={a} value={a}>{a}</option>
+                  ))}
+                </select>
+                <input
+                  className="input text-sm py-1.5 max-w-[220px]"
+                  placeholder="Search email / detail…"
+                  value={auditQ}
+                  onChange={(e) => setAuditQ(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && loadAudit()}
+                />
+                <button className="btn-ghost text-sm px-3 py-1.5" onClick={loadAudit}>Search</button>
+              </div>
+            </div>
+            {logs.length === 0 ? (
+              <p className="muted text-sm">No audit events yet. Test, badge and goal actions will appear here.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left muted border-b border-slate-200 dark:border-white/10">
+                    <Th>Time</Th><Th>Actor</Th><Th>Role</Th><Th>Action</Th><Th>Entity</Th><Th>Detail</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logs.map((l) => (
+                    <tr key={l.id} className="border-b border-slate-100 dark:border-white/5">
+                      <Td className="muted">{fmtDateTime(l.created_at)}</Td>
+                      <Td>{l.actor_email || "—"}</Td>
+                      <Td>{l.role || "—"}</Td>
+                      <Td><span className="badge-brand">{l.action}</span></Td>
+                      <Td className="muted truncate max-w-[160px]">{l.entity || "—"}</Td>
+                      <Td className="muted truncate max-w-[280px]">{l.detail ? JSON.stringify(l.detail) : "—"}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
           {/* Platform architecture (also available as a full page at /architecture) */}
           <Link href="/architecture" className="card card-hover p-5 flex items-center justify-between gap-4 bg-brand/[0.04] dark:bg-brand/[0.07] border-brand/20">
             <div className="flex items-center gap-3 min-w-0">
@@ -205,4 +277,10 @@ function fmtDate(v) {
   if (!v) return "—";
   const d = new Date(v);
   return isNaN(d) ? "—" : d.toLocaleDateString();
+}
+
+function fmtDateTime(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  return isNaN(d) ? "—" : d.toLocaleString();
 }

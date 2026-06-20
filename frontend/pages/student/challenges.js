@@ -159,7 +159,7 @@ export default function ChallengesPage() {
             {creating ? "Creating…" : "Challenge"}
           </button>
         </div>
-        {msg && <p className="text-sm mt-3 text-brand dark:text-indigo-400">{msg}</p>}
+        {msg && <p className="text-sm mt-3 text-brand dark:text-violet-400">{msg}</p>}
       </form>
 
       {loading ? (

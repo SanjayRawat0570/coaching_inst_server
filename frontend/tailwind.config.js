@@ -11,19 +11,21 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Dark control-room surfaces
+        // Dark control-room surfaces — plum-tinted to sit under the violet brand
         ink: {
-          950: "#070b18",
-          900: "#0b1120",
-          800: "#111a2e",
-          700: "#1a2540",
-          600: "#26324f",
+          950: "#0a0712",
+          900: "#0e0b16",
+          800: "#181426",
+          700: "#241d3a",
+          600: "#322a4a",
         },
         brand: {
-          DEFAULT: "#4f46e5", // indigo-600
-          dark: "#4338ca",    // indigo-700
-          light: "#6366f1",   // indigo-500
+          DEFAULT: "#7c3aed", // violet-600
+          dark: "#6d28d9",    // violet-700
+          light: "#8b5cf6",   // violet-500
         },
+        // Premium highlight — used in gradient accents (headline, CTA sheen)
+        accent: "#e879f9",   // fuchsia-400
         neon: {
           cyan: "#22d3ee",
           violet: "#a78bfa",
@@ -50,11 +52,15 @@ module.exports = {
         glow: "0 1px 2px rgba(16,24,40,0.05), 0 6px 16px -6px rgba(16,24,40,0.12)",
         "glow-cyan": "0 1px 2px rgba(16,24,40,0.05), 0 6px 16px -6px rgba(16,24,40,0.12)",
         card: "0 1px 0 0 rgba(255,255,255,0.03) inset, 0 12px 36px -16px rgba(0,0,0,0.55)",
+        // Brand-tinted elevation for the primary CTA — premium violet glow.
+        brand: "0 1px 2px rgba(124,58,237,0.20), 0 8px 22px -6px rgba(124,58,237,0.45)",
+        "brand-lg": "0 2px 4px rgba(124,58,237,0.18), 0 14px 34px -8px rgba(124,58,237,0.50)",
       },
       backgroundImage: {
-        // Solid brand fill (kept under the "grad" name for compatibility).
-        "brand-grad": "linear-gradient(#4f46e5,#4f46e5)",
-        "brand-soft": "linear-gradient(rgba(79,70,229,0.08),rgba(79,70,229,0.08))",
+        // Premium brand gradients — depth on fills, sheen on the headline accent.
+        "brand-grad": "linear-gradient(135deg,#8b5cf6 0%,#7c3aed 55%,#6d28d9 100%)",
+        "brand-soft": "linear-gradient(rgba(124,58,237,0.08),rgba(124,58,237,0.08))",
+        "text-grad": "linear-gradient(100deg,#8b5cf6 0%,#7c3aed 42%,#e879f9 100%)",
         grid: "radial-gradient(circle at 1px 1px, rgba(148,163,184,0.10) 1px, transparent 0)",
       },
       keyframes: {

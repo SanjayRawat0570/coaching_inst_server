@@ -99,7 +99,7 @@ export default function Login() {
               <GraduationCap size={17} />
             </span>
             <span className="font-semibold tracking-tight text-[15px]">
-              Smart<span className="text-brand dark:text-indigo-400">Coaching</span>
+              Smart<span className="text-brand dark:text-violet-400">Coaching</span>
             </span>
           </Link>
           <div className="flex items-center gap-1.5">
@@ -215,7 +215,7 @@ export default function Login() {
             <button
               type="button"
               onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); }}
-              className="font-medium text-brand dark:text-indigo-400 hover:underline"
+              className="font-medium text-brand dark:text-violet-400 hover:underline"
             >
               {mode === "login" ? "Create an account" : "Log in"}
             </button>

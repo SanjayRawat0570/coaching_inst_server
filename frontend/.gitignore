@@ -1,0 +1,30 @@
+# Frontend (Next.js) — see the root .gitignore for repo-wide rules.
+
+# Secrets / environment — never commit real values
+.env
+.env.*
+*.env
+!.env.example
+!.env.local.example
+.env.local
+
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Next.js build output
+/.next/
+/out/
+/build
+*.tsbuildinfo
+next-env.d.ts
+
+# Deploy
+/.vercel
+
+# Logs & misc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store

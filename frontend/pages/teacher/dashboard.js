@@ -160,7 +160,7 @@ export default function TeacherDashboard() {
                   </div>
                   <button
                     onClick={() => markRead(a.id)}
-                    className="text-xs text-brand dark:text-indigo-400 hover:underline whitespace-nowrap ml-3"
+                    className="text-xs text-brand dark:text-violet-400 hover:underline whitespace-nowrap ml-3"
                   >
                     Mark read
                   </button>
@@ -256,7 +256,7 @@ export default function TeacherDashboard() {
                       <p className="text-sm font-semibold">{c.label}</p>
                       <span className="badge-brand shrink-0">{c.size}×</span>
                     </div>
-                    {c.subject && <p className="text-xs text-brand dark:text-indigo-400 mt-0.5">{c.subject}</p>}
+                    {c.subject && <p className="text-xs text-brand dark:text-violet-400 mt-0.5">{c.subject}</p>}
                     <ul className="mt-2 space-y-1">
                       {(c.samples || []).map((s, j) => (
                         <li key={j} className="muted text-xs flex gap-1.5"><span>•</span><span className="line-clamp-2">{s}</span></li>
