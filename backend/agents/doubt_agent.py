@@ -70,7 +70,9 @@ Previous conversation:
 Student question: {question}
 
 {mode_instruction}
-Always end your response with: '{CLOSING}'"""
+End your answer with the line: '{CLOSING}'
+Then, on a final separate line, state your honest confidence in this answer exactly as:
+CONFIDENCE: XX%   (replace XX with a number 0-100)"""
 
 
 def persist_doubt(student_id, question, answer, subject, sources, confidence, input_type):
@@ -140,6 +142,13 @@ def doubt_node(state: CoachingState, persist: bool = True) -> CoachingState:
         answer = response.content
         if CLOSING not in answer:
             answer = f"{answer}\n\n{CLOSING}"
+
+        # F16: use the model's self-reported confidence if present (else keep the
+        # RAG-coverage heuristic computed above).
+        import re
+        m = re.search(r"CONFIDENCE:\s*(\d{1,3})\s*%", answer, re.IGNORECASE)
+        if m:
+            confidence = max(0.0, min(1.0, int(m.group(1)) / 100.0))
 
         # 6. Persist (inline by default; deferred to a BackgroundTask when persist=False)
         input_type = "image" if state.get("input_image") else "text"

@@ -211,6 +211,18 @@ CREATE TABLE IF NOT EXISTS challenges (
 );
 CREATE INDEX IF NOT EXISTS challenges_players_idx ON challenges (challenger_id, opponent_id, created_at DESC);
 
+-- ── F18: audit trail of test / badge / goal actions (Admin Dashboard) ─────────
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          BIGSERIAL PRIMARY KEY,
+  actor_email TEXT,
+  role        TEXT,
+  action      TEXT,        -- test_submitted | test_approved | test_rejected | badge_earned | goal_set
+  entity      TEXT,        -- the affected id/key (test id, badge key, student id)
+  detail      JSONB,
+  created_at  TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS audit_logs_action_idx ON audit_logs (action, created_at DESC);
+
 -- ── Concept similarity RPC (knowledge graph cosine search via pgvector) ───────
 CREATE OR REPLACE FUNCTION match_concepts(
   query_embedding VECTOR(384),

@@ -1,0 +1,38 @@
+# Backend (Python / FastAPI) — see the root .gitignore for repo-wide rules.
+
+# Secrets / environment — never commit real values
+.env
+.env.*
+*.env
+!.env.example
+
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+.venv311/
+venv/
+env/
+ENV/
+
+# Model / RAG caches & weights
+/tmp/
+*.pt
+*.bin
+*.onnx
+
+# Large data (index into Qdrant instead of committing)
+data/ncert_pdfs/
+data/pyq_bank/
+data/nta_cutoffs/
+
+# OS / editor
+.DS_Store
+Thumbs.db

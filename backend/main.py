@@ -367,6 +367,9 @@ def approve_test(req: ApproveTestRequest, user=Depends(require_role("teacher", "
     if req.approved:
         update["due_date"] = req.due_date or (date.today() + timedelta(days=3)).isoformat()
     sb.table("tests").update(update).eq("id", req.test_id).execute()
+    _audit("test_approved" if req.approved else "test_rejected", entity=req.test_id,
+           actor_email=user.get("email"), role="teacher",
+           detail={"status": update["status"]})  # F18
     return {"test_id": req.test_id, **update}
 
 
@@ -425,6 +428,10 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
     row = (sb.table("tests").select("score, total_marks, status")
            .eq("id", req.test_id).limit(1).execute().data) or []
     saved = row[0] if row else {}
+    _audit("test_submitted", entity=req.test_id, actor_email=user.get("email"),
+           role="student", detail={"score": saved.get("score"),
+                                   "total_marks": saved.get("total_marks"),
+                                   "integrity_flags": (evaluation or {}).get("integrity_flags", [])})  # F18 + F17
     return {
         "score": saved.get("score", ev.get("score")),
         "total_marks": saved.get("total_marks",
@@ -1003,6 +1010,8 @@ def set_parent_goal(req: ParentGoalRequest, user=Depends(require_role("parent"))
         update["target_rank"] = req.target_rank
     if update:
         sb.table("students").update(update).eq("id", req.student_id).execute()
+        _audit("goal_set", entity=req.student_id, actor_email=user.get("email"),
+               role="parent", detail=update)  # F18
     return {"ok": True, **update,
             "goal_progress": _goal_progress(child[0].get("predicted_rank"), update.get("target_rank", req.target_rank))}
 
@@ -1036,6 +1045,26 @@ def parent_activity_heatmap(days: int = 14, user=Depends(require_role("parent"))
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
+@app.get("/admin/audit-logs")
+def admin_audit_logs(action: str = "", q: str = "", limit: int = 200,
+                     user=Depends(require_role("admin"))):
+    """F18: filterable audit trail of test / badge / goal actions."""
+    sb = get_supabase()
+    query = sb.table("audit_logs").select("*").order("created_at", desc=True)
+    if action:
+        query = query.eq("action", action)
+    rows = query.limit(max(1, min(limit, 1000))).execute().data or []
+    if q:
+        ql = q.strip().lower()
+        rows = [r for r in rows
+                if ql in (r.get("actor_email") or "").lower()
+                or ql in (r.get("entity") or "").lower()
+                or ql in str(r.get("detail") or "").lower()]
+    return {"logs": rows,
+            "actions": ["test_submitted", "test_approved", "test_rejected",
+                        "badge_earned", "goal_set"]}
+
+
 @app.get("/admin/analytics")
 def admin_analytics(institute_id: str = "", user=Depends(require_role("admin"))):
     """Full institute view for an admin: headline metrics, every student record,
@@ -1271,6 +1300,21 @@ def _award_activity(student_id: str, kind: str) -> None:
         print(f"[gamify] award failed for {student_id}: {e}")
 
 
+def _audit(action: str, entity: str = None, actor_email: str = None,
+           role: str = None, detail: dict = None) -> None:
+    """F18: append an immutable audit row. Best-effort — never breaks the caller."""
+    try:
+        get_supabase().table("audit_logs").insert({
+            "actor_email": (actor_email or "").strip().lower() or None,
+            "role": role,
+            "action": action,
+            "entity": entity,
+            "detail": detail or {},
+        }).execute()
+    except Exception as e:
+        print(f"[audit] log failed ({action}): {e}")
+
+
 # F11 — badge catalog (icon names map to frontend Icon component).
 BADGE_CATALOG = [
     {"key": "first_doubt", "name": "Curious Mind", "desc": "Asked your first doubt", "icon": "doubt"},
@@ -1310,11 +1354,18 @@ def _award_badges(student_id: str) -> set:
     try:
         already = {b["badge_key"] for b in (sb.table("badges").select("badge_key")
                    .eq("student_id", student_id).execute().data or [])}
-        for key in earned - already:
-            try:
-                sb.table("badges").insert({"student_id": student_id, "badge_key": key}).execute()
-            except Exception as e:
-                print(f"[badges] insert {key} failed: {e}")
+        new_keys = earned - already
+        if new_keys:
+            prof = (sb.table("students").select("email")
+                    .eq("id", student_id).limit(1).execute().data) or []
+            email = prof[0].get("email") if prof else None
+            for key in new_keys:
+                try:
+                    sb.table("badges").insert({"student_id": student_id, "badge_key": key}).execute()
+                    _audit("badge_earned", entity=key, actor_email=email, role="student",
+                           detail={"badge": key})  # F18
+                except Exception as e:
+                    print(f"[badges] insert {key} failed: {e}")
     except Exception as e:
         print(f"[badges] award failed: {e}")
     return earned

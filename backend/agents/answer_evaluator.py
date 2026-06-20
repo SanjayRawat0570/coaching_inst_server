@@ -34,6 +34,29 @@ def _is_theory(q: dict) -> bool:
     return "options" not in q and "model_answer" in q
 
 
+# F17: a written answer this close to the model answer is likely copied verbatim.
+SIMILARITY_FLAG_THRESHOLD = 0.95
+
+
+def _answer_similarity(student_answer: str, model_answer: str):
+    """F17: cosine similarity between the student's and the model answer (0–1)."""
+    student_answer = (student_answer or "").strip()
+    model_answer = (model_answer or "").strip()
+    if not student_answer or not model_answer:
+        return None
+    try:
+        import math
+        from rag.embedder import embed
+        a, b = embed(student_answer), embed(model_answer)
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return round(dot / (na * nb), 4) if na and nb else None
+    except Exception as e:
+        print(f"[answer_evaluator] similarity check failed: {e}")
+        return None
+
+
 def grade_text_answer(question: str, model_answer: str, student_answer: str,
                       max_marks: float = 5) -> dict:
     """LLM-grade a written answer against the model answer. Returns marks + feedback."""
@@ -55,12 +78,16 @@ def grade_text_answer(question: str, model_answer: str, student_answer: str,
         data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
         awarded = float(data.get("marks_awarded", 0))
         awarded = max(0.0, min(awarded, float(max_marks)))  # clamp to [0, max]
+        sim = _answer_similarity(student_answer, model_answer)
         return {"marks_awarded": round(awarded, 2), "max_marks": max_marks,
-                "feedback": str(data.get("feedback", ""))}
+                "feedback": str(data.get("feedback", "")),
+                "similarity": sim,
+                "flagged": bool(sim is not None and sim > SIMILARITY_FLAG_THRESHOLD)}
     except Exception as e:
         print(f"[answer_evaluator] text grading failed: {e}")
         return {"marks_awarded": 0, "max_marks": max_marks,
-                "feedback": "Could not grade this answer automatically."}
+                "feedback": "Could not grade this answer automatically.",
+                "similarity": None, "flagged": False}
 
 
 def score_test(questions: list[dict], answers: list) -> dict:
@@ -91,7 +118,9 @@ def score_test(questions: list[dict], answers: list) -> dict:
                 per_concept[concept]["correct"] += 1
             outcome = "skipped" if not (isinstance(given, str) and given.strip()) else "graded"
             details.append({"index": i, "concept": concept, "outcome": outcome,
-                            "marks_awarded": awarded, "feedback": graded.get("feedback", "")})
+                            "marks_awarded": awarded, "feedback": graded.get("feedback", ""),
+                            "similarity": graded.get("similarity"),
+                            "flagged": graded.get("flagged", False)})  # F17
         else:
             marks = _num(q.get("marks"), 4)
             negative = _num(q.get("negative"), 1)
@@ -108,11 +137,17 @@ def score_test(questions: list[dict], answers: list) -> dict:
                 outcome = "wrong"
             details.append({"index": i, "concept": concept, "outcome": outcome})
 
+    # F17: surface any answers that are suspiciously close to the model answer.
+    integrity_flags = [{"index": d["index"], "concept": d["concept"],
+                        "similarity": d.get("similarity")}
+                       for d in details if d.get("flagged")]
+
     return {
         "score": round(score, 2),            # FLOAT column — fractions allowed (theory partials)
         "total_marks": int(round(total)),    # INTEGER column — must be a whole number
         "per_concept": per_concept,
         "details": details,
+        "integrity_flags": integrity_flags,
     }
 
 
