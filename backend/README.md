@@ -228,9 +228,16 @@ TAVILY_API_KEY                                        # Web-search RAG fallback
 
 ---
 
-## Deployment
+## Deployment — Railway
 
-Containerised for **HuggingFace Spaces** (Docker) — see [`../Dockerfile`](../Dockerfile),
-which listens on port **7860** and sets the `/tmp` model-cache env vars Spaces requires.
-The frontend deploys separately to Vercel from the
-[UI repo](https://github.com/SanjayRawat0570/coaching_inst_ui).
+Deployed on **Railway** from the root [`Dockerfile`](../Dockerfile) (config in
+[`../railway.json`](../railway.json)). Railway injects a dynamic `$PORT`, which the
+Dockerfile binds to (falling back to 7860 for HuggingFace Spaces). Health check: `/health`.
+
+Set the env vars from [`../.env.example`](../.env.example) in the Railway dashboard
+(do **not** set `PORT` — Railway provides it). Full step-by-step, including the Vercel
+frontend, is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
+
+The frontend deploys separately to **Vercel** from the
+[UI repo](https://github.com/SanjayRawat0570/coaching_inst_ui), pointing
+`NEXT_PUBLIC_API_URL` at the Railway domain.
