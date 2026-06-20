@@ -23,7 +23,7 @@ with **APScheduler** running the nightly/weekly automation. 100% free-tier stack
 | Memory | Working (last N turns) · Long-term (Mem0) · Episodic (Postgres) |
 | Jobs | APScheduler (timezone `Asia/Kolkata`) |
 | Notifications | Resend (email) + Twilio (WhatsApp) |
-| Voice | Browser Web Speech API (arrives pre-transcribed) / Whisper |
+| Voice | Browser Web Speech API (arrives pre-transcribed); Whisper optional (offline lecture transcription only) |
 
 ---
 
@@ -44,6 +44,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 `GET /health` → `{"status": "ok"}` confirms it's up. Interactive docs at `/docs`.
+
+> **Note:** `openai-whisper` is **not** in `requirements.txt` (it needs ffmpeg + special
+> build flags and is only used by the offline lecture-transcription CLI). Install it
+> manually if you need [`rag/transcribe.py`](rag/transcribe.py):
+> `pip install "setuptools<81" wheel && pip install --no-build-isolation openai-whisper==20231117`
 
 ---
 
@@ -228,16 +233,28 @@ TAVILY_API_KEY                                        # Web-search RAG fallback
 
 ---
 
-## Deployment — Railway
+## Deployment — Railway (native Python build, no Docker)
 
-Deployed on **Railway** from the root [`Dockerfile`](../Dockerfile) (config in
-[`../railway.json`](../railway.json)). Railway injects a dynamic `$PORT`, which the
-Dockerfile binds to (falling back to 7860 for HuggingFace Spaces). Health check: `/health`.
+Deployed on **Railway** using its native **Railpack** builder — no Dockerfile:
 
-Set the env vars from [`../.env.example`](../.env.example) in the Railway dashboard
-(do **not** set `PORT` — Railway provides it). Full step-by-step, including the Vercel
-frontend, is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
+| Setting | Value |
+|---------|-------|
+| Builder | Railpack (auto-detects Python via `requirements.txt`) |
+| Root Directory | the folder containing the backend (leave empty if the repo root *is* the backend) |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Python | pinned to **3.11** via [`.python-version`](.python-version) |
+| Health check | `/health` |
 
+- **Do not set a `PORT` variable** — Railway injects it; the start command binds `$PORT`.
+- Set the env vars from [`../.env.example`](../.env.example) in the Railway dashboard.
+- Live: `https://coachinginstserver-production.up.railway.app` (`/health`, `/docs`).
+
+Full step-by-step (Railway + Vercel) is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
 The frontend deploys separately to **Vercel** from the
-[UI repo](https://github.com/SanjayRawat0570/coaching_inst_ui), pointing
-`NEXT_PUBLIC_API_URL` at the Railway domain.
+[UI repo](https://github.com/SanjayRawat0570/coaching_inst_ui), with
+`NEXT_PUBLIC_API_URL` pointing at the Railway domain.
+
+> A root [`Dockerfile`](../Dockerfile) + [`../railway.json`](../railway.json) also exist
+> (for a Docker-based deploy / HuggingFace Spaces). They are unused by the native Railway
+> setup above — delete them if you only deploy via Railpack.
