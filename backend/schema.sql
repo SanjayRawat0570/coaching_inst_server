@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS doubt_logs (
   confidence   FLOAT,
   created_at   TIMESTAMP DEFAULT NOW()
 );
+-- RAG_SERVER answers (migrations/2026-10-18_doubt_rag_server.sql)
+ALTER TABLE doubt_logs
+  ADD COLUMN IF NOT EXISTS citations       JSONB,      -- [{source, page}] shown as source chips
+  ADD COLUMN IF NOT EXISTS answerable      BOOLEAN,    -- false = not covered by the institute's material
+  ADD COLUMN IF NOT EXISTS rag_confidence  TEXT,       -- RAG_SERVER label: high | medium | low
+  ADD COLUMN IF NOT EXISTS conversation_id TEXT,       -- RAG_SERVER conversation memory
+  ADD COLUMN IF NOT EXISTS rating          SMALLINT CHECK (rating BETWEEN 1 AND 5);  -- 👍 5 / 👎 1
 
 -- ── Tests ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tests (
@@ -242,6 +249,7 @@ $$;
 CREATE INDEX IF NOT EXISTS concepts_embedding_idx ON concepts USING ivfflat (embedding vector_cosine_ops) WITH (lists=50);
 CREATE INDEX IF NOT EXISTS weakness_map_student_idx ON weakness_map (student_id, score);
 CREATE INDEX IF NOT EXISTS alerts_institute_idx ON alerts (institute_id, is_read, created_at);
+CREATE INDEX IF NOT EXISTS alerts_type_institute_idx ON alerts (alert_type, institute_id, created_at);
 CREATE INDEX IF NOT EXISTS flashcards_review_idx ON flashcards (student_id, next_review);
 CREATE INDEX IF NOT EXISTS doubt_logs_student_idx ON doubt_logs (student_id, created_at);
 CREATE INDEX IF NOT EXISTS students_parent_email_idx ON students (parent_email);

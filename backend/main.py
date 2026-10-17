@@ -51,13 +51,23 @@ app.add_middleware(
 
 # ── Request models ────────────────────────────────────────────────────────────
 class DoubtRequest(BaseModel):
-    institute_id: str
-    question: str
+    # Ignored: the institute (and so the RAG_SERVER tenant) is resolved server-side
+    # from the caller. Still accepted because older frontends send it.
+    institute_id: str = ""
+    question: str = ""
     subject: str | None = None
     student_level: str = "intermediate"
     image_b64: str | None = None
     socratic: bool = False
-    conversation_history: list[dict] = []
+    conversation_history: list[dict] = []        # working memory (Socratic mode)
+    conversation_id: str | None = None           # RAG_SERVER conversation memory
+    new_conversation: bool = True                # first message of a chat
+
+
+class DoubtFeedbackRequest(BaseModel):
+    doubt_id: str
+    helpful: bool
+    comment: str = ""
 
 
 class GenerateTestRequest(BaseModel):
@@ -189,97 +199,114 @@ def signup(req: SignupRequest):
 # ── Doubt ─────────────────────────────────────────────────────────────────────
 @app.post("/doubt")
 def doubt(req: DoubtRequest, background: BackgroundTasks, user=Depends(get_current_user)):
-    from agents.doubt_agent import answer_doubt, persist_doubt
+    from agents.doubt_agent import answer_doubt, after_doubt
     student_id = _resolve_student_id(user)
-    # Answer now; defer the doubt_logs + long-term memory writes to a background task
+    institute_id = _caller_institute_id(user)
+    # Answer + write the doubt_logs row now (its id is the doubt_id); defer
+    # long-term memory and the content-gap alert to a background task.
     result = answer_doubt(
         student_id=student_id,
-        institute_id=req.institute_id,
+        institute_id=institute_id,
         question=req.question,
         subject=req.subject,
-        student_level=req.student_level,
         image_b64=req.image_b64,
         socratic=req.socratic,
         conversation_history=req.conversation_history,
-        persist=False,
+        conversation_id=req.conversation_id,
+        new_conversation=req.new_conversation,
+        side_effects=False,
     )
     if not result.get("error"):
-        background.add_task(
-            persist_doubt, student_id, result["question"], result["answer"],
-            req.subject, result["sources"], result["confidence"], result["input_type"],
-        )
+        background.add_task(after_doubt, student_id, institute_id, result["question"],
+                            result["answer"], result["answerable"], result["rag_confidence"])
         background.add_task(_award_activity, student_id, "doubt")
     return result
 
 
+def _sse(text: str) -> str:
+    """One SSE event. A multi-line payload becomes several data: lines, which the
+    client joins back with "\\n" — so blank lines inside a token can't end the event."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    return "".join(f"data: {line}\n" for line in lines) + "\n"
+
+
 @app.post("/doubt/stream")
 async def doubt_stream(req: DoubtRequest, user=Depends(get_current_user)):
-    from graph.doubt_subgraph import get_doubt_graph
-    student_id = _resolve_student_id(user)
-    graph = get_doubt_graph()
+    """Stream a doubt answer: plain tokens, [STATUS]…, [ERROR]…, [META]{json}, [DONE].
 
-    initial = {
-        "student_id": student_id,
-        "institute_id": req.institute_id,
-        "action_type": "doubt",
-        "input_text": req.question,
-        "input_image": req.image_b64,
-        "subject": req.subject,
-        "student_level": req.student_level,
-        "conversation_history": req.conversation_history or [],
-        "current_topic": "socratic" if req.socratic else None,
-        "iteration_count": 0,
-    }
+    [ERROR] always carries a friendly message; the real reason is only logged.
+    """
+    import json
+    from starlette.concurrency import run_in_threadpool
+    from agents.doubt_agent import run_doubt, persist_doubt, after_doubt, BUSY_MESSAGE
+
+    student_id = await run_in_threadpool(_resolve_student_id, user)
+    institute_id = await run_in_threadpool(_caller_institute_id, user)
+    background = BackgroundTasks()  # runs after the stream has been sent
 
     async def generate():
-        import re
-        streamed = False        # did we forward any live tokens?
-        final_answer = ""       # node's full answer, used as a fallback
-        node_error = None       # node-level error captured from state
         try:
-            async for event in graph.astream_events(initial, version="v2"):
-                kind = event["event"]
-                # Only stream the FINAL answer — the doubt node tags it "final_answer".
-                # Without this filter the RAG pipeline's internal LLM calls (query
-                # planning, HyDE, CRAG scoring) leak their tokens into the answer.
-                if kind == "on_chat_model_stream" and "final_answer" in event.get("tags", []):
-                    chunk = event["data"]["chunk"].content
-                    if chunk:
-                        streamed = True
-                        yield f"data: {chunk}\n\n"
-                elif kind == "on_chain_start" and event.get("name") == "doubt":
-                    yield "data: [STATUS]Searching notes and thinking…\n\n"
-                elif kind == "on_chain_end" and event.get("name") == "doubt":
-                    out = event.get("data", {}).get("output") or {}
-                    if isinstance(out, dict):
-                        final_answer = out.get("agent_output") or ""
-                        node_error = out.get("error")
+            async for kind, data in run_doubt(
+                    student_id=student_id, institute_id=institute_id, question=req.question,
+                    subject=req.subject, image_b64=req.image_b64, socratic=req.socratic,
+                    conversation_history=req.conversation_history,
+                    conversation_id=req.conversation_id,
+                    new_conversation=req.new_conversation):
+                if kind == "status":
+                    yield _sse(f"[STATUS]{data}")
+                elif kind == "token":
+                    yield _sse(data)
+                elif kind == "error":
+                    yield _sse(f"[ERROR]{data}")
+                elif kind == "result":
+                    doubt_id = await run_in_threadpool(
+                        persist_doubt, student_id, data["question"], data["answer"],
+                        req.subject, data["input_type"], data["citations"],
+                        data["answerable"], data["confidence"], data["conversation_id"])
+                    meta = {"doubt_id": doubt_id, "citations": data["citations"],
+                            "answerable": data["answerable"], "confidence": data["confidence"],
+                            "conversation_id": data["conversation_id"],
+                            "provider": data["provider"]}
+                    yield _sse("[META]" + json.dumps(meta, ensure_ascii=False))
+                    background.add_task(after_doubt, student_id, institute_id, data["question"],
+                                        data["answer"], data["answerable"], data["confidence"])
+                    # Reward the student only when a real answer went out.
+                    background.add_task(_award_activity, student_id, "doubt")
         except Exception as e:
-            yield f"data: [ERROR]{e}\n\n"
-            yield "data: [DONE]\n\n"
-            return
+            print(f"[doubt/stream] failed: {e}")
+            yield _sse(f"[ERROR]{BUSY_MESSAGE}")
+        yield _sse("[DONE]")
 
-        # Fallback: the node ran but no tokens streamed (e.g. the model returned
-        # all at once, or an internal step failed and was caught in state). Send
-        # the final answer so the user never sees an empty bubble.
-        if not streamed:
-            if node_error:
-                # node_error holds the real exception; agent_output is just a placeholder
-                yield f"data: [ERROR]{node_error}\n\n"
-            elif final_answer:
-                # Collapse blank lines so they don't clash with the SSE "\n\n" delimiter.
-                safe = re.sub(r"\n{2,}", "\n", final_answer.replace("\r\n", "\n"))
-                yield f"data: {safe}\n\n"
-            else:
-                yield "data: [ERROR]No answer was generated. Please try again.\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream", background=background)
 
-        # Reward the student only when a real answer went out (not on error).
-        if not node_error and (streamed or final_answer):
-            _award_activity(student_id, "doubt")
 
-        yield "data: [DONE]\n\n"
+@app.post("/doubt/feedback")
+def doubt_feedback(req: DoubtFeedbackRequest, background: BackgroundTasks,
+                   user=Depends(get_current_user)):
+    """👍 / 👎 on one of the student's own answers; forwarded to RAG_SERVER."""
+    from rag import rag_server_client
+    from rag.rag_config import get_rag_config
+    sb = get_supabase()
+    student_id = _resolve_student_id(user)
+    doubt_id = _as_uuid(req.doubt_id)
+    row = (sb.table("doubt_logs").select("id, student_id, question, answer, rag_sources, rating")
+           .eq("id", doubt_id).limit(1).execute().data) if doubt_id else []
+    if not row or row[0].get("student_id") != student_id:
+        raise HTTPException(status_code=404, detail="Doubt not found.")
+    if row[0].get("rating") is not None:
+        raise HTTPException(status_code=409, detail="You've already rated this answer.")
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    rating = 5 if req.helpful else 1
+    sb.table("doubt_logs").update({"rating": rating}).eq("id", doubt_id).execute()
+
+    sources = [c.get("source") + (f" p. {c['page']}" if c.get("page") else "")
+               for c in (row[0].get("rag_sources") or [])
+               if isinstance(c, dict) and c.get("source")]
+    _, api_key = get_rag_config(_caller_institute_id(user))
+    background.add_task(rag_server_client.send_feedback, doubt_id, rating,
+                        query=row[0].get("question") or "", answer=row[0].get("answer") or "",
+                        sources=sources, comment=req.comment, api_key=api_key)
+    return {"doubt_id": doubt_id, "rating": rating}
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
