@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -971,6 +971,54 @@ def teacher_activity_heatmap(institute_id: str = "", days: int = 14,
     q = q.eq("institute_id", iid) if iid else q.is_("institute_id", "null")
     emails = [s["email"] for s in (q.execute().data or []) if s.get("email")]
     return _activity_heatmap(emails=emails, days=days)
+
+
+# ── Study material (the only way content enters RAG_SERVER) ───────────────────
+async def _material_call(user, fn, *args, **kwargs):
+    """Run a rag.study_materials action for the caller's institute (resolved
+    server-side); MaterialError becomes the matching HTTP error."""
+    from starlette.concurrency import run_in_threadpool
+    from rag.study_materials import MaterialError
+    institute_id = await run_in_threadpool(_caller_institute_id, user)
+    try:
+        return await fn(*args, institute_id=institute_id, **kwargs)
+    except MaterialError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.post("/teacher/materials/upload")
+async def upload_material(file: UploadFile = File(...), subject: str = Form(""),
+                          chapter: str = Form(""), class_level: str = Form(""),
+                          exam: str = Form(""), material_type: str = Form("notes"),
+                          user=Depends(require_role("teacher", "admin"))):
+    """Upload notes / NCERT / PYQs: original -> Storage, copy -> RAG_SERVER (async indexing)."""
+    from rag.study_materials import create_material, MAX_BYTES
+    content = await file.read(MAX_BYTES + 1)  # one byte over is enough to reject it
+    return await _material_call(
+        user, create_material, content, file.filename or "file",
+        uploaded_by=user["id"], subject=subject.strip(), chapter=chapter.strip(),
+        class_level=class_level.strip(), exam=exam, material_type=material_type)
+
+
+@app.get("/teacher/materials")
+async def list_study_materials(user=Depends(require_role("teacher", "admin"))):
+    """The institute's study material; uploads still indexing are refreshed from RAG_SERVER."""
+    from rag.study_materials import list_materials
+    return {"materials": await _material_call(user, list_materials)}
+
+
+@app.post("/teacher/materials/{material_id}/reindex")
+async def reindex_study_material(material_id: str, user=Depends(require_role("teacher", "admin"))):
+    """Send the stored original to RAG_SERVER again (e.g. after it lost its data)."""
+    from rag.study_materials import reindex_material
+    return await _material_call(user, reindex_material, material_id)
+
+
+@app.delete("/teacher/materials/{material_id}")
+async def delete_study_material(material_id: str, user=Depends(require_role("teacher", "admin"))):
+    """Delete the row + stored original. Chunks already in RAG_SERVER stay."""
+    from rag.study_materials import delete_material
+    return await _material_call(user, delete_material, material_id)
 
 
 @app.post("/teacher/alerts/read")

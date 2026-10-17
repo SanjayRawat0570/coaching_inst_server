@@ -61,6 +61,13 @@ class _FakeQuery:
         self.op, self.payload = "update", row
         return self
 
+    def delete(self):
+        self.op = "delete"
+        return self
+
+    def order(self, *_, **__):
+        return self
+
     def _filter(self, kind, key, value):
         self.filters.append((kind, key, value))
         return self
@@ -88,12 +95,47 @@ class _FakeQuery:
         return SimpleNamespace(data=rows)
 
 
+class FakeStorage:
+    """supabase.storage stand-in: files[path] = bytes; set fail[op] = Exception."""
+
+    def __init__(self):
+        self.files, self.fail, self.calls = {}, {}, []
+
+    def from_(self, bucket):
+        storage = self
+
+        class _Bucket:
+            def _do(self, op, path):
+                storage.calls.append((bucket, op, path))
+                if op in storage.fail:
+                    raise storage.fail[op]
+
+            def upload(self, path, file, file_options=None):
+                self._do("upload", path)
+                storage.files[path] = file
+
+            def download(self, path):
+                self._do("download", path)
+                if path not in storage.files:
+                    raise RuntimeError("Object not found")
+                return storage.files[path]
+
+            def remove(self, paths):
+                for p in paths:
+                    self._do("remove", p)
+                    storage.files.pop(p, None)
+                return []
+
+        return _Bucket()
+
+
 class FakeSupabase:
     """Minimal supabase-py stand-in. Set results[(table, op)] to rows, an
     Exception, or a callable(query) -> rows; inspect .calls afterwards."""
 
     def __init__(self):
         self.results, self.calls = {}, []
+        self.storage = FakeStorage()
 
     def table(self, name):
         return _FakeQuery(self, name)
