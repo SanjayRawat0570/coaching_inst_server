@@ -282,3 +282,18 @@ CREATE POLICY "student_own_tests" ON tests
 DROP POLICY IF EXISTS "student_own_flashcards" ON flashcards;
 CREATE POLICY "student_own_flashcards" ON flashcards
   FOR ALL USING (student_id IN (SELECT id FROM students WHERE auth_id = auth.uid()));
+
+-- ── RAG_SERVER: per-institute tenant + API key (migrations/2026-10-17_rag_server.sql)
+-- The tenant slug sits on institutes; the key goes in institute_secrets, because
+-- institutes has no RLS. RLS on + no policies = readable by the service role only.
+ALTER TABLE institutes ADD COLUMN IF NOT EXISTS rag_tenant TEXT;   -- e.g. 'inst-3f2a9c'
+CREATE UNIQUE INDEX IF NOT EXISTS institutes_rag_tenant_key
+  ON institutes (rag_tenant) WHERE rag_tenant IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS institute_secrets (
+  institute_id UUID PRIMARY KEY REFERENCES institutes(id) ON DELETE CASCADE,
+  rag_api_key  TEXT,                                   -- sk-... tenant-scoped, role "member"
+  updated_at   TIMESTAMP DEFAULT NOW()
+);
+ALTER TABLE institute_secrets ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON institute_secrets FROM anon, authenticated;

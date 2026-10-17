@@ -21,6 +21,9 @@ from auth.supabase_auth import get_current_user, require_role, get_supabase  # n
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not os.getenv("RAG_SERVER_URL"):
+        print("[main] WARNING: RAG_SERVER_URL is not set - RAG_SERVER is disabled, so "
+              "nothing can be retrieved from study material. See .env.example.")
     # Start scheduled jobs on boot
     try:
         from scheduler.jobs import start_scheduler, shutdown_scheduler
@@ -1151,6 +1154,22 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
     }
 
 
+@app.get("/admin/rag/health")
+async def admin_rag_health(user=Depends(require_role("admin"))):
+    """RAG_SERVER status for the admin's institute. Never returns the API key."""
+    from starlette.concurrency import run_in_threadpool
+    from rag import rag_server_client
+    from rag.rag_config import get_rag_config
+    # Both lookups hit Supabase synchronously — keep them off the event loop.
+    institute_id = await run_in_threadpool(_caller_institute_id, user)
+    tenant, api_key = await run_in_threadpool(get_rag_config, institute_id)
+    return {
+        "configured": rag_server_client.is_enabled(api_key),
+        "reachable": await rag_server_client.health(),
+        "tenant": tenant,
+    }
+
+
 # ── Debug (time-travel) ───────────────────────────────────────────────────────
 @app.get("/debug/history/{thread_id}")
 def debug_history(thread_id: str, user=Depends(require_role("admin", "teacher"))):
@@ -1441,6 +1460,23 @@ def _activity_heatmap(emails=None, days: int = 14) -> dict:
     except Exception as e:
         print(f"[activity] heatmap failed: {e}")
     return {"hours": buckets, "total": sum(buckets), "days": days}
+
+
+def _caller_institute_id(user: dict) -> str | None:
+    """The caller's institute, resolved server-side — never from the request body.
+
+    Students: their students.institute_id row. Teachers/admins (no student row):
+    the institute_id in their auth metadata. None when the account has no valid
+    institute (callers then use the env-default RAG tenant).
+    """
+    try:
+        row = (get_supabase().table("students").select("institute_id")
+               .eq("auth_id", user["id"]).limit(1).execute()).data
+        if row:
+            return _as_uuid(row[0].get("institute_id"))
+    except Exception as e:
+        print(f"[main] institute lookup failed for {user.get('id')}: {e}")
+    return _as_uuid(user.get("institute_id"))
 
 
 def _resolve_student_id(user: dict) -> str:
