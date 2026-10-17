@@ -234,6 +234,23 @@ def test_delete_storage_failure_keeps_row(env):
     assert env["sb"].ops("study_materials", "delete") == []
 
 
+def test_admin_reindex_all(env):
+    rows = [{"id": MID, "institute_id": INST, "filename": "a.pdf", "storage_path": f"{INST}/{MID}/a.pdf"},
+            {"id": "55555555-5555-5555-5555-555555555555", "institute_id": INST, "filename": "lost.pdf",
+             "storage_path": f"{INST}/x/lost.pdf"}]
+    env["sb"].storage.files[rows[0]["storage_path"]] = b"%PDF a"
+    env["sb"].results[("study_materials", "select")] = \
+        lambda q: [r for r in rows if all(f[0] != "eq" or f[1] != "id" or r["id"] == f[2] for f in q.filters)]
+    main.app.dependency_overrides[get_current_user] = user("teacher")
+    assert env["client"].post("/admin/materials/reindex-all").status_code == 403
+
+    main.app.dependency_overrides[get_current_user] = user("admin")
+    body = env["client"].post("/admin/materials/reindex-all").json()
+    assert (body["total"], body["sent"]) == (2, 1)
+    assert body["failed"][0]["filename"] == "lost.pdf"
+    assert [u["filename"] for u in env["uploads"]] == ["a.pdf"]
+
+
 # ── Lecture transcripts ───────────────────────────────────────────────────────
 
 def test_transcribe_uploads_timestamped_txt_as_lecture(monkeypatch):

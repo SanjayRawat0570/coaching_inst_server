@@ -226,6 +226,29 @@ async def reindex_material(material_id: str, institute_id) -> dict:
     return {**row, **update}
 
 
+async def reindex_all(institute_id, concurrency: int = 3) -> dict:
+    """Re-send every stored original of the institute to RAG_SERVER (e.g. after
+    RAG_SERVER lost its data on one of its own redeploys)."""
+    await _rag(institute_id)  # 503 up front if RAG_SERVER isn't configured
+    rows = await asyncio.to_thread(lambda: _scoped(
+        _supabase().table("study_materials").select("id, filename, storage_path"), institute_id)
+        .limit(1000).execute().data) or []
+    gate = asyncio.Semaphore(concurrency)
+
+    async def one(row):
+        async with gate:
+            try:
+                out = await reindex_material(row["id"], institute_id)
+                return row, out.get("status"), out.get("message")
+            except MaterialError as e:
+                return row, "failed", e.detail
+
+    done = await asyncio.gather(*(one(r) for r in rows if r.get("storage_path")))
+    failed = [{"id": r["id"], "filename": r["filename"], "message": msg}
+              for r, status, msg in done if status != "running"]
+    return {"total": len(rows), "sent": len(done) - len(failed), "failed": failed}
+
+
 def _remove_quietly(path: str) -> None:
     try:
         _bucket().remove([path])

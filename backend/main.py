@@ -1064,6 +1064,13 @@ async def reindex_study_material(material_id: str, user=Depends(require_role("te
     return await _material_call(user, reindex_material, material_id)
 
 
+@app.post("/admin/materials/reindex-all")
+async def reindex_all_study_materials(user=Depends(require_role("admin"))):
+    """Re-index every study material of the admin's institute from Storage."""
+    from rag.study_materials import reindex_all
+    return await _material_call(user, reindex_all)
+
+
 @app.delete("/teacher/materials/{material_id}")
 async def delete_study_material(material_id: str, user=Depends(require_role("teacher", "admin"))):
     """Delete the row + stored original. Chunks already in RAG_SERVER stay."""
