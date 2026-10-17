@@ -1,4 +1,9 @@
-"""Embedding helper — single shared all-MiniLM-L6-v2 model (384-dim, CPU, free)."""
+"""Embedding helper — single shared all-MiniLM-L6-v2 model (384-dim, CPU, free).
+
+NOT used for retrieval of study material (that is RAG_SERVER only). It powers the
+non-RAG features: long-term memory (pgvector), copy detection in grading, doubt
+clustering, and the concept knowledge graph.
+"""
 
 import os
 from functools import lru_cache

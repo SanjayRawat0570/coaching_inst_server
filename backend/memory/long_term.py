@@ -1,62 +1,46 @@
 """Long-term memory — student learning patterns across all sessions.
 
-Specced on Mem0, but mem0ai 0.1.0 is broken (pgvector schema, missing Qdrant
-index, internal validation bugs), so this delivers the same capability directly
-on Qdrant + the local all-MiniLM-L6-v2 embedder: semantic recall of a student's
-past doubts/notes. All free — no paid OpenAI, no Ollama. Every function fails
-soft so the agents keep working even if Qdrant is unreachable.
+Semantic recall of a student's past doubts: each exchange is embedded with the
+local all-MiniLM-L6-v2 model (rag/embedder.py) and stored in the Supabase
+pgvector table `student_memories`; recall goes through the
+`match_student_memories` RPC (cosine similarity, one student at a time).
+All free — no paid OpenAI, no Ollama, no separate vector database. Every
+function fails soft so the agents keep working if Supabase is unreachable or
+the migration (migrations/2026-10-18_remove_old_rag.sql) hasn't been run.
+
+(Specced on Mem0, but mem0ai 0.1.0 was broken; this delivers the same capability.)
 """
 
-import uuid
-from functools import lru_cache
-
-COLLECTION = "longterm_memories"
-VECTOR_SIZE = 384
+TABLE = "student_memories"
+MATCH_RPC = "match_student_memories"
 
 
-@lru_cache(maxsize=1)
-def _ensure_collection():
-    """Create the memories collection + student_id index once. Returns client or None."""
-    try:
-        from rag.qdrant_client import client
-        from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
+def _supabase():
+    from auth.supabase_auth import get_supabase
+    return get_supabase()
 
-        names = {c.name for c in client.get_collections().collections}
-        if COLLECTION not in names:
-            client.create_collection(
-                collection_name=COLLECTION,
-                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-            )
-        # Filtering memories by student requires a keyword index on student_id.
-        try:
-            client.create_payload_index(
-                collection_name=COLLECTION,
-                field_name="student_id",
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-        except Exception:
-            pass  # index already exists
-        return client
-    except Exception as e:
-        print(f"[long_term] Qdrant memory unavailable, running without it: {e}")
-        return None
+
+def _embed(text: str) -> list[float]:
+    from rag.embedder import embed
+    return embed(text)
+
+
+def _vec_literal(vector: list[float]) -> str:
+    """pgvector expects a '[0.1,0.2,...]' string literal over PostgREST."""
+    return "[" + ",".join(str(x) for x in vector) + "]"
 
 
 def add_memory(student_id: str, user_text: str, assistant_text: str = "") -> bool:
     """Persist a conversation turn as long-term memory. Returns True on success."""
-    client = _ensure_collection()
-    if client is None or not user_text:
+    if not student_id or not user_text:
         return False
     try:
-        from rag.embedder import embed
-        from qdrant_client.models import PointStruct
-
         memory = user_text if not assistant_text else f"{user_text}\n{assistant_text}"
-        client.upsert(collection_name=COLLECTION, points=[PointStruct(
-            id=str(uuid.uuid4()),
-            vector=embed(user_text),
-            payload={"student_id": student_id, "memory": memory},
-        )])
+        _supabase().table(TABLE).insert({
+            "student_id": student_id,
+            "memory": memory,
+            "embedding": _vec_literal(_embed(user_text)),
+        }).execute()
         return True
     except Exception as e:
         print(f"[long_term] add failed: {e}")
@@ -68,23 +52,15 @@ def get_memories(student_id: str, query: str, limit: int = 5) -> str:
 
     Safe to call inside any agent node — returns "" on any failure.
     """
-    client = _ensure_collection()
-    if client is None or not query:
+    if not student_id or not query:
         return ""
     try:
-        from rag.embedder import embed
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-
-        hits = client.search(
-            collection_name=COLLECTION,
-            query_vector=embed(query),
-            query_filter=Filter(must=[
-                FieldCondition(key="student_id", match=MatchValue(value=student_id))
-            ]),
-            limit=limit,
-            with_payload=True,
-        )
-        return "\n".join(h.payload.get("memory", "") for h in hits if h.payload)
+        rows = _supabase().rpc(MATCH_RPC, {
+            "p_student_id": student_id,
+            "query_embedding": _vec_literal(_embed(query)),
+            "match_count": limit,
+        }).execute().data or []
+        return "\n".join(r.get("memory", "") for r in rows if r.get("memory"))
     except Exception as e:
         print(f"[long_term] search failed: {e}")
         return ""

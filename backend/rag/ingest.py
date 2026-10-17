@@ -1,107 +1,61 @@
-"""RAG ingestion — PDF/text -> chunks -> embed -> Qdrant upsert.
+"""Ingest a study-material file into RAG_SERVER from the command line.
 
-Usage:
-    python -m rag.ingest --pdf data/ncert_pdfs/physics.pdf \
-        --source ncert --subject Physics --chapter "Laws of Motion" --collection rag_shared
+A thin wrapper around rag.study_materials.create_material — the same path as the
+teacher's Study Material page: the original goes to Supabase Storage, a
+study_materials row is created, and RAG_SERVER does the chunking + indexing.
 
-Shared content (NCERT, PYQs, NTA cutoffs) -> rag_shared.
-Institute notes -> rag_{institute_id}.
+Usage (from backend/):
+    python -m rag.ingest --file data/ncert_pdfs/physics_ch5.pdf --material-type ncert \
+        --subject Physics --chapter "Laws of Motion" --institute-id <institute uuid>
+
+For many files at once use scripts/migrate_to_rag_server.py --files DIR.
 """
 
-import os
 import argparse
-
-from rag.qdrant_client import (
-    upsert_chunks, create_shared_collection, create_institute_collection, client,
-)
-
-
-def extract_pdf_text(path: str) -> str:
-    """Extract all text from a PDF using PyMuPDF (fitz)."""
-    import fitz
-    doc = fitz.open(path)
-    text = "\n".join(page.get_text() for page in doc)
-    doc.close()
-    return text
+import asyncio
+import uuid
+from pathlib import Path
 
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 120) -> list[str]:
-    """Simple word-window chunker with overlap."""
-    words = text.split()
-    chunks, i = [], 0
-    while i < len(words):
-        chunk = " ".join(words[i:i + chunk_size])
-        if chunk.strip():
-            chunks.append(chunk)
-        i += chunk_size - overlap
-    return chunks
-
-
-def _collection_exists(name: str) -> bool:
-    try:
-        existing = {c.name for c in client.get_collections().collections}
-        return name in existing
-    except Exception:
-        return False
-
-
-def ingest_pdf(
-    pdf_path: str,
-    source: str,
-    subject: str = None,
-    chapter: str = None,
-    level: int = 1,
-    collection: str = "rag_shared",
-    institute_id: str = None,
-) -> int:
-    """Ingest one PDF into a Qdrant collection. Returns number of chunks upserted."""
-    if institute_id:
-        collection = f"rag_{institute_id}"
-
-    # Create the collection if missing (don't recreate — that wipes existing data)
-    if not _collection_exists(collection):
-        if collection == "rag_shared":
-            create_shared_collection()
-        elif institute_id:
-            create_institute_collection(institute_id)
-
-    text = extract_pdf_text(pdf_path)
-    pieces = chunk_text(text)
-    chunks = [{
-        "content": p,
-        "source": source,
-        "subject": subject,
-        "chapter": chapter,
-        "level": level,
-    } for p in pieces]
-
-    count = upsert_chunks(chunks, collection)
-    print(f"Ingested {count} chunks from {pdf_path} -> {collection}")
-    return count
+def ingest_file(path: str, institute_id: str = None, subject: str = None, chapter: str = None,
+                material_type: str = "notes", exam: str = None, class_level: str = None) -> dict:
+    """Upload one file as study material. Returns its study_materials row."""
+    from rag.study_materials import create_material, CLI_UPLOADER
+    file = Path(path)
+    return asyncio.run(create_material(
+        file.read_bytes(), file.name, institute_id=institute_id, uploaded_by=CLI_UPLOADER,
+        subject=subject, chapter=chapter, class_level=class_level, exam=exam,
+        material_type=material_type))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Ingest a PDF into Qdrant")
-    parser.add_argument("--pdf", required=True)
-    parser.add_argument("--source", required=True,
-                        choices=["ncert", "pyq", "institute_notes",
-                                 "video_transcript", "nta_cutoff"])
+    from dotenv import load_dotenv
+    from rag.study_materials import MaterialError, MATERIAL_TYPES
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(description="Upload a study-material file to RAG_SERVER")
+    parser.add_argument("--file", required=True)
+    parser.add_argument("--material-type", default="notes", choices=MATERIAL_TYPES)
     parser.add_argument("--subject", default=None)
     parser.add_argument("--chapter", default=None)
-    parser.add_argument("--level", type=int, default=1)
-    parser.add_argument("--collection", default="rag_shared")
-    parser.add_argument("--institute-id", default=None)
+    parser.add_argument("--exam", default=None, help="JEE | NEET | Boards | Other")
+    parser.add_argument("--class-level", default=None)
+    parser.add_argument("--institute-id", default=None,
+                        help="institute uuid (omit for the env-default RAG tenant)")
     args = parser.parse_args()
+    if args.institute_id:
+        try:
+            uuid.UUID(args.institute_id)
+        except ValueError:
+            raise SystemExit(f"[ingest] --institute-id must be a UUID, got {args.institute_id!r}")
 
-    ingest_pdf(
-        pdf_path=args.pdf,
-        source=args.source,
-        subject=args.subject,
-        chapter=args.chapter,
-        level=args.level,
-        collection=args.collection,
-        institute_id=args.institute_id,
-    )
+    try:
+        row = ingest_file(args.file, args.institute_id, args.subject, args.chapter,
+                          args.material_type, args.exam, args.class_level)
+    except MaterialError as e:
+        raise SystemExit(f"[ingest] {e.detail}")
+    print(f"[ingest] {row.get('filename')} -> status {row.get('status')}"
+          + (f" ({row.get('message')})" if row.get("message") else ""))
 
 
 if __name__ == "__main__":

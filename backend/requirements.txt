@@ -1,7 +1,8 @@
-# NOTE: 3 pins corrected from the original spec because they could not co-install:
-#   pydantic 2.7.0  -> 2.7.4   (mem0ai 0.1.0 requires >=2.7.3)
-#   qdrant-client 1.9.0 -> 1.9.1 (mem0ai 0.1.0 requires >=1.9.1)
+# NOTE: 2 pins differ from the original spec because they could not co-install:
+#   pydantic 2.7.0  -> 2.7.4   (kept from the old mem0ai constraint; known-good with fastapi 0.111)
 #   requests 2.32.0 -> 2.31.0  (resend 0.7.0 pins ==2.31.0)
+# Retrieval is RAG_SERVER only (rag/rag_server_client.py over httpx). The old RAG
+# stack — qdrant-client, langchain-community (Tavily), pymupdf, mem0ai — is gone.
 setuptools<81
 fastapi==0.111.0
 uvicorn==0.30.0
@@ -13,17 +14,17 @@ langgraph==0.1.5
 langchain-groq==0.1.5
 langchain-google-genai==1.0.6
 langchain-openai==0.1.8
-langchain-community==0.2.5
 supabase==2.5.0
 psycopg2-binary==2.9.9
-qdrant-client==1.9.1
+# Local MiniLM embeddings for the NON-RAG features only: long-term memory (pgvector),
+# copy detection, doubt clustering, concept knowledge graph (rag/embedder.py).
 sentence-transformers==3.0.0
+# Doubt clustering (agents/doubt_cluster_agent.py). Was only pulled in by sentence-transformers.
+scikit-learn==1.5.0
 # openai-whisper is OPTIONAL — only the offline lecture-transcription CLI
 # (rag/transcribe.py) needs it, and it requires ffmpeg + special build flags.
 # Install it manually for local transcription:
 #   pip install "setuptools<81" wheel && pip install --no-build-isolation openai-whisper==20231117
-mem0ai==0.1.0
-pymupdf==1.24.0
 pillow==10.3.0
 opencv-python-headless==4.9.0.80
 apscheduler==3.10.4

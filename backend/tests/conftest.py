@@ -143,6 +143,11 @@ class FakeSupabase:
     def table(self, name):
         return _FakeQuery(self, name)
 
+    def rpc(self, name, params):
+        q = _FakeQuery(self, name)
+        q.op, q.payload = "rpc", params
+        return q
+
     def ops(self, table, op):
         return [c for c in self.calls if c.table == table and c.op == op]
 

@@ -276,6 +276,32 @@ INSERT INTO storage.buckets (id, name, public, file_size_limit)
 VALUES ('study-materials', 'study-materials', false, 52428800)
 ON CONFLICT (id) DO NOTHING;
 
+-- ── Long-term student memory (pgvector; replaced Qdrant longterm_memories) ──
+-- migrations/2026-10-18_remove_old_rag.sql
+CREATE TABLE IF NOT EXISTS student_memories (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id  UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  memory      TEXT NOT NULL,           -- "question\nanswer"
+  embedding   VECTOR(384),             -- all-MiniLM-L6-v2 of the question
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS student_memories_student_idx ON student_memories (student_id, created_at DESC);
+ALTER TABLE student_memories ENABLE ROW LEVEL SECURITY;  -- backend-only: no policies
+
+CREATE OR REPLACE FUNCTION match_student_memories(
+  p_student_id    UUID,
+  query_embedding VECTOR(384),
+  match_count     INT DEFAULT 5
+)
+RETURNS TABLE (memory TEXT, similarity FLOAT)
+LANGUAGE sql STABLE AS $$
+  SELECT m.memory, 1 - (m.embedding <=> query_embedding) AS similarity
+  FROM student_memories m
+  WHERE m.student_id = p_student_id AND m.embedding IS NOT NULL
+  ORDER BY m.embedding <=> query_embedding
+  LIMIT match_count;
+$$;
+
 -- ── Concept similarity RPC (knowledge graph cosine search via pgvector) ───────
 CREATE OR REPLACE FUNCTION match_concepts(
   query_embedding VECTOR(384),
