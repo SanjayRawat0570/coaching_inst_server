@@ -3,6 +3,8 @@ hot topics at a glance.
 
 Embeds recent doubts (MiniLM), clusters them by cosine similarity (Agglomerative),
 labels each cluster, and stores the top clusters per institute in `doubt_clusters`.
+Each cluster also gets the top RAG_SERVER source for its topic ({source, page},
+or null), so a "hot topic" links to the notes that cover it.
 Runs nightly; can also be triggered on demand from the teacher dashboard.
 """
 
@@ -74,6 +76,23 @@ def _cluster_group(doubts: list[dict], max_clusters: int = 8) -> list[dict]:
     return clusters[:max_clusters]
 
 
+def _attach_sources(clusters: list[dict], institute_id) -> list[dict]:
+    """Top RAG_SERVER source per cluster (searched by label + a sample), or None."""
+    if not clusters:
+        return clusters
+    try:
+        from rag.grounding import retrieve_each
+        from rag.rag_server_client import citations_of
+        queries = [" ".join(filter(None, [c["label"], (c.get("samples") or [""])[0]]))
+                   for c in clusters]
+        found = retrieve_each(queries, _as_uuid(institute_id), top_k=1)
+        return [{**c, "source": citations_of(hits[:1])[0] if hits else None}
+                for c, hits in zip(clusters, found)]
+    except Exception as e:
+        print(f"[doubt_cluster] source lookup failed: {e}")
+        return [{**c, "source": None} for c in clusters]
+
+
 def cluster_doubts(days: int = 7) -> dict:
     """Cluster recent doubts per institute and persist the top clusters."""
     sb = _supabase()
@@ -97,7 +116,7 @@ def cluster_doubts(days: int = 7) -> dict:
 
     total = 0
     for institute_id, group in by_inst.items():
-        clusters = _cluster_group(group)
+        clusters = _attach_sources(_cluster_group(group), institute_id)
         # Replace this institute's previous clusters.
         try:
             q = sb.table("doubt_clusters").delete()
@@ -106,8 +125,15 @@ def cluster_doubts(days: int = 7) -> dict:
         except Exception as e:
             print(f"[doubt_cluster] clear failed: {e}")
         for c in clusters:
+            row = {**c, "institute_id": institute_id}
             try:
-                sb.table("doubt_clusters").insert({**c, "institute_id": institute_id}).execute()
+                try:
+                    sb.table("doubt_clusters").insert(row).execute()
+                except Exception as e:
+                    # Most likely doubt_clusters.source doesn't exist yet (Phase 6 migration).
+                    print(f"[doubt_cluster] insert failed, retrying without source: {e}")
+                    sb.table("doubt_clusters").insert(
+                        {k: v for k, v in row.items() if k != "source"}).execute()
                 total += 1
             except Exception as e:
                 print(f"[doubt_cluster] insert failed: {e}")

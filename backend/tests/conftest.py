@@ -81,6 +81,9 @@ class _FakeQuery:
     def ilike(self, key, value):
         return self._filter("ilike", key, value)
 
+    def in_(self, key, values):
+        return self._filter("in", key, list(values))
+
     def is_(self, key, value):
         return self._filter("is", key, value)
 

@@ -973,6 +973,56 @@ def teacher_activity_heatmap(institute_id: str = "", days: int = 14,
     return _activity_heatmap(emails=emails, days=days)
 
 
+# ── RAG insights: content gaps + answer quality ───────────────────────────────
+@app.get("/teacher/rag-insights")
+def teacher_rag_insights(user=Depends(require_role("teacher", "admin"))):
+    """Content gaps (doubts the institute's material didn't cover, last 14 days) and
+    answer quality (% helpful, % answerable, last 7 days) for the caller's institute."""
+    from datetime import datetime, timedelta, timezone
+    sb = get_supabase()
+    inst = _caller_institute_id(user)
+    now = datetime.now(timezone.utc)
+    scope = (lambda q: q.eq("institute_id", inst)) if inst else (lambda q: q.is_("institute_id", "null"))
+
+    gaps = {}
+    prefix = "Doubt not covered by institute material: "
+    try:
+        rows = scope(sb.table("alerts").select("message, created_at")
+                     .eq("alert_type", "content_gap")
+                     .gte("created_at", (now - timedelta(days=14)).isoformat())
+                     ).limit(2000).execute().data or []
+    except Exception as e:
+        print(f"[rag-insights] content gaps failed: {e}")
+        rows = []
+    for r in rows:
+        q = (r.get("message") or "").removeprefix(prefix).strip()
+        if not q:
+            continue
+        g = gaps.setdefault(q.lower(), {"question": q, "count": 0, "last_seen": None})
+        g["count"] += 1
+        g["last_seen"] = max(filter(None, [g["last_seen"], r.get("created_at")]), default=None)
+    content_gaps = sorted(gaps.values(), key=lambda g: (-g["count"], g["question"]))[:10]
+
+    quality = None
+    try:
+        sids = [s["id"] for s in (scope(sb.table("students").select("id")).limit(5000)
+                                  .execute().data or [])]
+        logs = (sb.table("doubt_logs").select("rating, answerable").in_("student_id", sids)
+                .gte("created_at", (now - timedelta(days=7)).isoformat())
+                .limit(10000).execute().data or []) if sids else []
+        rated = [d["rating"] for d in logs if d.get("rating") is not None]
+        known = [d["answerable"] for d in logs if d.get("answerable") is not None]
+        quality = {
+            "doubts": len(logs),
+            "rated": len(rated),
+            "helpful_pct": round(sum(r >= 4 for r in rated) / len(rated) * 100) if rated else None,
+            "answerable_pct": round(sum(known) / len(known) * 100) if known else None,
+        }
+    except Exception as e:
+        print(f"[rag-insights] answer quality failed (Phase 2 migration run?): {e}")
+    return {"content_gaps": content_gaps, "answer_quality": quality}
+
+
 # ── Study material (the only way content enters RAG_SERVER) ───────────────────
 async def _material_call(user, fn, *args, **kwargs):
     """Run a rag.study_materials action for the caller's institute (resolved
@@ -1243,6 +1293,19 @@ async def admin_rag_health(user=Depends(require_role("admin"))):
         "reachable": await rag_server_client.health(),
         "tenant": tenant,
     }
+
+
+@app.get("/admin/rag/usage")
+async def admin_rag_usage(user=Depends(require_role("admin"))):
+    """RAG_SERVER queries, tokens, cost and cache hits for the admin's tenant.
+    usage is None (connected: false) when RAG_SERVER isn't configured or reachable."""
+    from starlette.concurrency import run_in_threadpool
+    from rag import rag_server_client
+    from rag.rag_config import get_rag_config
+    institute_id = await run_in_threadpool(_caller_institute_id, user)
+    tenant, api_key = await run_in_threadpool(get_rag_config, institute_id)
+    usage = await rag_server_client.tenant_usage(tenant=tenant, api_key=api_key)
+    return {"connected": usage is not None, "tenant": tenant, "usage": usage}
 
 
 # ── Debug (time-travel) ───────────────────────────────────────────────────────

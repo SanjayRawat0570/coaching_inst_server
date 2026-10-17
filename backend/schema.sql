@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS doubt_clusters (
   created_at   TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS doubt_clusters_institute_idx ON doubt_clusters (institute_id, created_at DESC);
+ALTER TABLE doubt_clusters ADD COLUMN IF NOT EXISTS source JSONB;   -- top RAG_SERVER source {source, page}
 
 -- ── F6: per-event activity log for the 24-hour heatmap (tracked by email) ─────
 CREATE TABLE IF NOT EXISTS activity_log (
