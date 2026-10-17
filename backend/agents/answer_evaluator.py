@@ -1,6 +1,9 @@
 """Answer Evaluator — grades MCQ answers and handwritten answer photos.
 
 For MCQs: deterministic scoring with negative marking.
+For written theory answers: the LLM grades against the model answer AND the
+institute's material for that question, retrieved from RAG_SERVER (the chunks
+used come back as grounding_sources). No material -> grades on the model answer.
 For handwritten subjective answers: Gemini Vision reads the photo and grades step by
 step against a model answer.
 """
@@ -58,11 +61,23 @@ def _answer_similarity(student_answer: str, model_answer: str):
 
 
 def grade_text_answer(question: str, model_answer: str, student_answer: str,
-                      max_marks: float = 5) -> dict:
-    """LLM-grade a written answer against the model answer. Returns marks + feedback."""
+                      max_marks: float = 5, grounding: list[dict] | None = None,
+                      institute_id: str | None = None) -> dict:
+    """LLM-grade a written answer against the model answer and the institute's material.
+
+    grounding: RAG_SERVER chunks for this question (from score_test, which fetches
+    all of a test's in parallel). If None, they are retrieved here (top 3).
+    Returns marks + feedback + grounding_sources ([{source, page}], [] if none).
+    """
+    from rag.rag_server_client import citations_of, format_context
+
     student_answer = (student_answer or "").strip()
     if not student_answer:
-        return {"marks_awarded": 0, "max_marks": max_marks, "feedback": "No answer given."}
+        return {"marks_awarded": 0, "max_marks": max_marks, "feedback": "No answer given.",
+                "grounding_sources": []}
+    if grounding is None:
+        grounding = _retrieve_for([question], institute_id)[0]
+    material = format_context(grounding, max_chars=3000)
     try:
         from graph.llm import get_llm
         llm = get_llm(temperature=0)
@@ -71,7 +86,10 @@ def grade_text_answer(question: str, model_answer: str, student_answer: str,
             "for correct steps and reasoning; be fair but rigorous.\n"
             f"Question: {question}\n"
             f"Model answer / marking scheme: {model_answer or '(use standard JEE/NEET scheme)'}\n"
-            f"Maximum marks: {max_marks}\n"
+            + (f"Institute's study material for this question (rely on it alongside the model "
+               f"answer; credit correct points it supports even if worded differently):\n"
+               f"{material}\n" if material else "")
+            + f"Maximum marks: {max_marks}\n"
             f"Student's answer: {student_answer}\n"
             'Return ONLY JSON: {"marks_awarded": number, "feedback": "one-line feedback"}'
         ).content
@@ -82,24 +100,43 @@ def grade_text_answer(question: str, model_answer: str, student_answer: str,
         return {"marks_awarded": round(awarded, 2), "max_marks": max_marks,
                 "feedback": str(data.get("feedback", "")),
                 "similarity": sim,
-                "flagged": bool(sim is not None and sim > SIMILARITY_FLAG_THRESHOLD)}
+                "flagged": bool(sim is not None and sim > SIMILARITY_FLAG_THRESHOLD),
+                "grounding_sources": citations_of(grounding)}
     except Exception as e:
         print(f"[answer_evaluator] text grading failed: {e}")
         return {"marks_awarded": 0, "max_marks": max_marks,
                 "feedback": "Could not grade this answer automatically.",
-                "similarity": None, "flagged": False}
+                "similarity": None, "flagged": False, "grounding_sources": []}
 
 
-def score_test(questions: list[dict], answers: list) -> dict:
+def _retrieve_for(questions: list[str], institute_id) -> list[list[dict]]:
+    """RAG_SERVER material per question (top 3), in parallel. Never raises."""
+    try:
+        from rag.grounding import retrieve_each
+        return retrieve_each(questions, institute_id, top_k=3)
+    except Exception as e:
+        print(f"[answer_evaluator] retrieval failed, grading without material: {e}")
+        return [[] for _ in questions]
+
+
+def score_test(questions: list[dict], answers: list, institute_id: str | None = None) -> dict:
     """Score a test that may contain MCQ and/or theoretical questions.
 
     For MCQ, answers[i] is the chosen option index (or None). For theory, answers[i]
-    is the student's written text. Theory answers are graded by the LLM.
+    is the student's written text. Theory answers are graded by the LLM against the
+    model answer and the institute's material (fetched for all of them in parallel).
     """
     score = 0.0
     total = 0
     per_concept = {}
     details = []
+
+    # RAG_SERVER material for every answered theory question, fetched up front.
+    answered = [i for i, q in enumerate(questions) if _is_theory(q)
+                and i < len(answers) and isinstance(answers[i], str) and answers[i].strip()]
+    found = _retrieve_for([questions[i].get("question", "") for i in answered], institute_id) \
+        if answered else []
+    material = dict(zip(answered, found))
     for i, q in enumerate(questions):
         concept = q.get("concept", "unknown")
         per_concept.setdefault(concept, {"correct": 0, "total": 0})
@@ -110,7 +147,8 @@ def score_test(questions: list[dict], answers: list) -> dict:
             marks = _num(q.get("marks"), 5)
             total += marks
             graded = grade_text_answer(q.get("question", ""), q.get("model_answer", ""),
-                                       given if isinstance(given, str) else "", marks)
+                                       given if isinstance(given, str) else "", marks,
+                                       grounding=material.get(i, []))
             awarded = graded["marks_awarded"]
             score += awarded
             # Count as "correct" for the concept if at least half marks were earned.
@@ -120,7 +158,8 @@ def score_test(questions: list[dict], answers: list) -> dict:
             details.append({"index": i, "concept": concept, "outcome": outcome,
                             "marks_awarded": awarded, "feedback": graded.get("feedback", ""),
                             "similarity": graded.get("similarity"),
-                            "flagged": graded.get("flagged", False)})  # F17
+                            "flagged": graded.get("flagged", False),  # F17
+                            "grounding_sources": graded.get("grounding_sources", [])})
         else:
             marks = _num(q.get("marks"), 4)
             negative = _num(q.get("negative"), 1)
@@ -199,8 +238,10 @@ def evaluator_node(state: CoachingState) -> CoachingState:
         test = row[0]
         questions = test.get("questions") or []
         answers = test.get("answers") or []
+        # The test row knows the institute (the /test/submit state doesn't).
+        institute_id = test.get("institute_id") or state.get("institute_id") or None
 
-        result = score_test(questions, answers)
+        result = score_test(questions, answers, institute_id=institute_id)
 
         sb.table("tests").update({
             "score": result["score"],
@@ -213,6 +254,7 @@ def evaluator_node(state: CoachingState) -> CoachingState:
             "evaluation_result": result,
             "score": result["score"],
             "subject": test.get("subject"),
+            "institute_id": institute_id or "",   # flashcards retrieve from this tenant
         }
 
     except Exception as e:

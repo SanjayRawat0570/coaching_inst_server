@@ -2,6 +2,11 @@
 
 Generates flashcards for concepts a student got wrong, schedules reviews with the
 SM-2 algorithm, and surfaces cards that are due (for the daily reminder job).
+
+Cards are built from the institute's material retrieved from RAG_SERVER for each
+wrong concept, and each card stores its `source` ({source, page}). A concept with
+nothing retrieved is skipped. If RAG_SERVER isn't configured at all, cards fall
+back to the LLM's own knowledge with source null.
 """
 
 import os
@@ -59,7 +64,8 @@ def due_cards(student_id: str) -> list[dict]:
         res = (
             _supabase()
             .table("flashcards")
-            .select("id, question, answer, subject, concept, next_review")
+            # "*" so `source` comes back once the Phase 4 migration adds it.
+            .select("*")
             .eq("student_id", student_id)
             .lte("next_review", date.today().isoformat())
             .order("next_review", desc=False)
@@ -71,10 +77,33 @@ def due_cards(student_id: str) -> list[dict]:
         return []
 
 
+def _material_block(material: list[tuple[str, list[dict]]]) -> tuple[str, list[dict]]:
+    """Prompt text with chunks numbered across all concepts, plus that flat chunk list."""
+    lines, flat = [], []
+    for concept, chunks in material:
+        lines.append(f"Concept: {concept}")
+        for c in chunks:
+            flat.append(c)
+            where = c["source"] + (f", p. {c['page']}" if c.get("page") else "")
+            lines.append(f"[{len(flat)}] ({where})\n{c['text'].strip()[:800]}")
+        lines.append("")
+    return "\n".join(lines).strip(), flat
+
+
+def _insert_card(sb, row: dict) -> None:
+    try:
+        sb.table("flashcards").insert(row).execute()
+    except Exception as e:
+        # Most likely the Phase 4 migration (flashcards.source) hasn't been run yet.
+        print(f"[flashcard_agent] insert failed, retrying without source: {e}")
+        sb.table("flashcards").insert({k: v for k, v in row.items() if k != "source"}).execute()
+
+
 def flashcard_gen_node(state: CoachingState) -> CoachingState:
     """After a test, generate flashcards for the concepts the student got wrong."""
     try:
         from graph.llm import get_llm
+        from rag import grounding
         import json
 
         result = state.get("evaluation_result") or {}
@@ -86,12 +115,33 @@ def flashcard_gen_node(state: CoachingState) -> CoachingState:
             return {**state}
 
         subject = state.get("subject")
+        institute_id = state.get("institute_id") or None
+        if grounding.enabled(institute_id):
+            found = grounding.retrieve_each(
+                [" ".join(filter(None, [c, subject])) for c in wrong_concepts], institute_id, top_k=3)
+            material = [(c, chunks) for c, chunks in zip(wrong_concepts, found) if chunks]
+            if not material:
+                print("[flashcard_agent] nothing retrieved for any wrong concept; no cards")
+                return {**state}
+            block, flat = _material_block(material)
+            prompt = (
+                "Create one concise flashcard per concept for JEE/NEET revision, built from the "
+                "institute's material below. Rely on it; don't add facts it doesn't support.\n\n"
+                f"{block}\n\n"
+                'Return ONLY a JSON array: [{"concept": "...", "question": "...", "answer": "...", '
+                '"source_ref": n}] where n is the number [n] of the material the card is based on.'
+            )
+        else:
+            # RAG_SERVER not configured: plain LLM cards, no source.
+            material, flat = [(c, []) for c in wrong_concepts], []
+            prompt = (
+                "Create one concise flashcard per concept for JEE/NEET revision.\n"
+                f"Concepts: {', '.join(wrong_concepts)}\n"
+                'Return ONLY a JSON array: [{"concept": "...", "question": "...", "answer": "..."}]'
+            )
+
         llm = get_llm(temperature=0.3)
-        raw = llm.invoke(
-            "Create one concise flashcard per concept for JEE/NEET revision.\n"
-            f"Concepts: {', '.join(wrong_concepts)}\n"
-            'Return ONLY a JSON array: [{"concept": "...", "question": "...", "answer": "..."}]'
-        ).content
+        raw = llm.invoke(prompt).content
         try:
             cards = json.loads(raw[raw.find("["): raw.rfind("]") + 1])
         except Exception:
@@ -99,13 +149,16 @@ def flashcard_gen_node(state: CoachingState) -> CoachingState:
 
         sb = _supabase()
         for card in cards:
-            sb.table("flashcards").insert({
+            if not isinstance(card, dict) or not card.get("question"):
+                continue
+            _insert_card(sb, {
                 "student_id": state["student_id"],
                 "question": card.get("question"),
                 "answer": card.get("answer"),
                 "subject": subject,
                 "concept": card.get("concept"),
-            }).execute()
+                "source": grounding.source_of(flat, card.get("source_ref")),
+            })
 
         return {**state}
 

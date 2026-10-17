@@ -19,6 +19,7 @@ class CoachingState(TypedDict):
     search_queries:        Optional[List[str]]
     agent_output:          Optional[str]
     test_questions:        Optional[List[dict]]
+    test_context_chunks:   Optional[List[dict]]    # RAG_SERVER chunks the generator used (for the reviewer)
     question_type:         Optional[Literal["mcq", "theory"]]
     difficulty_level:      Optional[int]       # F4: 1–5, from last score
     difficulty_mix:        Optional[dict]      # {easy, medium, hard} percentages

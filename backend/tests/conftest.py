@@ -78,6 +78,9 @@ class _FakeQuery:
     def gte(self, key, value):
         return self._filter("gte", key, value)
 
+    def ilike(self, key, value):
+        return self._filter("ilike", key, value)
+
     def is_(self, key, value):
         return self._filter("is", key, value)
 

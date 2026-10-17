@@ -1,8 +1,11 @@
 """Test Generator — personalized MCQ tests targeting each student's weak concepts.
 
-Pulls the concept-level weakness map, retrieves matching PYQs from Qdrant, and asks
-the LLM for a balanced 30/50/20 difficulty set. Designed to sit in a reviewer loop:
-review_feedback (if present) is fed back in to improve the next attempt.
+Pulls the concept-level weakness map, retrieves the institute's matching material
+and PYQs from RAG_SERVER (one query per weak concept), and asks the LLM for a
+balanced difficulty set based on that material. Each question carries a `source`
+({source, page}, or null when it isn't based on retrieved material). Designed to
+sit in a reviewer loop: review_feedback (if present) is fed back in to improve
+the next attempt, and the retrieved chunks are kept in state for the reviewer.
 """
 
 import os
@@ -79,28 +82,30 @@ def test_generator_node(state: CoachingState, num_questions: int = 10) -> Coachi
     """Generate state['test_questions'] targeting the student's weak concepts."""
     try:
         from graph.llm import get_llm
-        from rag.retriever import full_rag_pipeline
+        from rag import grounding
+        from rag.rag_server_client import format_context
 
         subject = state.get("subject")
         weak = _weak_concepts(state["student_id"], subject)
         concept_names = [w["concept"] for w in weak if w.get("concept")]
         focus = ", ".join(concept_names) if concept_names else (subject or "the syllabus")
 
-        # Retrieve relevant past-year questions / reference material for grounding.
-        # RAG is optional context — a retrieval failure must not abort generation
-        # (the LLM falls back to its own syllabus knowledge below).
-        try:
-            pyq_context = "\n\n".join(
-                full_rag_pipeline(
-                    question=f"Previous year questions on {focus}",
-                    subject=subject,
-                    institute_id=state.get("institute_id"),
-                    student_level=state.get("student_level") or "intermediate",
-                )
-            )
-        except Exception as e:
-            print(f"[test_generator] RAG retrieval failed, generating without context: {e}")
-            pyq_context = ""
+        # Institute material / PYQs from RAG_SERVER, one query per weak concept.
+        # Retrieved once and reused across reviewer retries. Optional context: on
+        # failure or no hits the LLM uses its own syllabus knowledge (source: null).
+        chunks = state.get("test_context_chunks")
+        if chunks is None:
+            queries = [" ".join(filter(None, [w["concept"], w.get("subject") or subject,
+                                              "previous year question"]))
+                       for w in weak if w.get("concept")]
+            if not queries:
+                queries = [f"{subject or 'JEE NEET'} previous year questions"]
+            try:
+                chunks = grounding.retrieve(queries, state.get("institute_id"), top_k=3)
+            except Exception as e:
+                print(f"[test_generator] retrieval failed, generating without context: {e}")
+                chunks = []
+        pyq_context = format_context(chunks)
 
         feedback = state.get("review_feedback") or ""
         retry_note = (
@@ -117,10 +122,20 @@ def test_generator_node(state: CoachingState, num_questions: int = 10) -> Coachi
             level = _difficulty_level(_last_score_percent(state["student_id"]))
         easy, med, hard = _LEVEL_MIX.get(level, _LEVEL_MIX[3])
 
+        if pyq_context:
+            material = f"""Reference material from the institute's notes and PYQs (numbered):
+{pyq_context}
+
+- Base the questions on this material and its PYQs, keeping the JEE/NEET exam pattern.
+- Set "source_ref" to the number [n] of the material a question is based on, or null
+  if it isn't based on any of it. Never cite material that doesn't support the question."""
+        else:
+            material = """Reference material: (none available — use your own knowledge of the syllabus)
+- Set "source_ref" to null for every question."""
+
         common = f"""Target these weak concepts first: {focus}
 Subject: {subject or "mixed"}
-Reference material (past-year style questions / notes):
-{pyq_context or "(use your own knowledge of the syllabus)"}
+{material}
 
 Rules:
 - Overall difficulty: {_LEVEL_NAME[level]} (level {level}/5).
@@ -136,7 +151,8 @@ Rules:
 
 Return ONLY a JSON array, no preamble, each element:
 {{"question": "...", "model_answer": "concise expected answer / key points",
-  "difficulty": "easy|medium|hard", "concept": "...", "marks": 5, "type": "theory"}}"""
+  "difficulty": "easy|medium|hard", "concept": "...", "marks": 5, "type": "theory",
+  "source_ref": 1}}"""
         else:
             prompt = f"""Create a {num_questions}-question MCQ test for a JEE/NEET student.
 
@@ -145,7 +161,8 @@ Return ONLY a JSON array, no preamble, each element:
 
 Return ONLY a JSON array, no preamble, each element:
 {{"question": "...", "options": ["A","B","C","D"], "answer_index": 0,
-  "difficulty": "easy|medium|hard", "concept": "...", "marks": 4, "negative": 1, "type": "mcq"}}"""
+  "difficulty": "easy|medium|hard", "concept": "...", "marks": 4, "negative": 1, "type": "mcq",
+  "source_ref": 1}}"""
 
         llm = get_llm(temperature=0.4)
         raw = llm.invoke(prompt).content
@@ -156,13 +173,17 @@ Return ONLY a JSON array, no preamble, each element:
             print(f"[test_generator] JSON parse failed: {e}")
             questions = []
 
-        # Make sure every question carries its type even if the LLM omitted it.
+        # Every question carries its type (even if the LLM omitted it) and a
+        # source: the retrieved chunk it cites as {source, page}, else null.
+        questions = [q for q in questions if isinstance(q, dict)]
         for q in questions:
             q.setdefault("type", question_type)
+            q["source"] = grounding.source_of(chunks, q.pop("source_ref", None))
 
         return {**state, "test_questions": questions, "subject": subject,
                 "question_type": question_type, "difficulty_level": level,
-                "difficulty_mix": {"easy": easy, "medium": med, "hard": hard}}
+                "difficulty_mix": {"easy": easy, "medium": med, "hard": hard},
+                "test_context_chunks": chunks}
 
     except Exception as e:
         return {**state, "error": str(e), "test_questions": []}

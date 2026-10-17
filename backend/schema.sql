@@ -161,6 +161,26 @@ CREATE TABLE IF NOT EXISTS flashcards (
   created_at    TIMESTAMP DEFAULT NOW()
 );
 
+ALTER TABLE flashcards ADD COLUMN IF NOT EXISTS source JSONB;   -- {source, page} it was built from
+
+-- ── NTA cutoffs: marks / percentile -> AIR for the rank predictor (not RAG) ───
+-- Filled from CSV: python -m scripts.import_nta_cutoffs <file.csv>
+CREATE TABLE IF NOT EXISTS nta_cutoffs (
+  id          BIGSERIAL PRIMARY KEY,
+  exam        TEXT NOT NULL,                 -- JEE Main | JEE Advanced | NEET
+  year        INTEGER NOT NULL,
+  category    TEXT NOT NULL DEFAULT 'GEN',   -- GEN | OBC-NCL | SC | ST | EWS | ...
+  marks       NUMERIC,
+  max_marks   NUMERIC,                       -- paper total, e.g. 300 (JEE Main), 720 (NEET)
+  percentile  NUMERIC,
+  rank        INTEGER NOT NULL,
+  source      TEXT,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  CHECK (marks IS NOT NULL OR percentile IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS nta_cutoffs_lookup_idx ON nta_cutoffs (exam, year, category);
+ALTER TABLE nta_cutoffs ENABLE ROW LEVEL SECURITY;  -- backend-only: no policies
+
 -- ── F1: persisted 7-day study plans (latest per student shown on dashboard) ───
 CREATE TABLE IF NOT EXISTS study_plans (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
