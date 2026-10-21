@@ -9,7 +9,7 @@ Verifies the Supabase-issued JWT on every request and exposes:
 import os
 from functools import lru_cache
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
 
@@ -32,10 +32,32 @@ def get_supabase() -> Client:
         raise RuntimeError(
             "SUPABASE_URL and SUPABASE_SERVICE_KEY (or SUPABASE_KEY) must be set"
         )
-    return create_client(url, key)
+    options = _http1_options()
+    return create_client(url, key, options) if options else create_client(url, key)
+
+
+def _http1_options():
+    """This one client is shared by every request thread. Newer supabase-py versions
+    talk HTTP/2 to PostgREST, and an HTTP/2 connection shared across threads breaks
+    under load (ReadError / RemoteProtocolError — measured: 10.6% of /progress
+    requests at 50 concurrent users). Where the library lets us pass the HTTP client,
+    use a pooled HTTP/1.1 one. The pinned supabase 2.5 already uses HTTP/1.1 and has
+    no such option, so it gets None (its defaults)."""
+    try:
+        import dataclasses
+        import httpx
+        from supabase import ClientOptions
+        if "httpx_client" not in {f.name for f in dataclasses.fields(ClientOptions)}:
+            return None
+        return ClientOptions(httpx_client=httpx.Client(
+            http2=False, timeout=httpx.Timeout(30.0),
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20)))
+    except Exception:
+        return None
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ):
     """Validate the bearer JWT against Supabase Auth and return the user object.
@@ -58,6 +80,8 @@ def get_current_user(
         )
 
     metadata = user.user_metadata or {}
+    # For the request log line (observability.py): the role only, never who it is.
+    request.state.role = metadata.get("role") or "unknown"
     return {
         "id": user.id,
         "email": user.email,

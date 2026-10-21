@@ -2,6 +2,7 @@ import { useState } from "react";
 import dynamic from "next/dynamic";
 import Shell from "../../components/Shell";
 import Icon from "../../components/Icon";
+import SystemHealth from "../../components/SystemHealth";
 import { ResultsTable, ErrorState, Skeleton, SkeletonCard } from "../../components/ui";
 import { useApi } from "../../lib/hooks";
 import { useAuth } from "../../lib/useAuth";
@@ -56,6 +57,8 @@ export default function AdminAnalytics() {
               icon={<Icon name="mastery" />}
             />
           </div>
+
+          <SystemHealth />
 
           {/* AI usage — RAG_SERVER queries, tokens, cost and cache hits for this institute */}
           <div className="card p-5">

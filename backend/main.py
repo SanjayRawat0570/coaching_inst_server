@@ -22,7 +22,10 @@ load_dotenv()
 from auth.supabase_auth import get_current_user, require_role, get_supabase  # noqa: E402
 import cache  # noqa: E402
 import jobs  # noqa: E402
+import observability  # noqa: E402
 import ratelimit  # noqa: E402
+
+observability.setup_logging()
 
 # Seconds the heavy read endpoints are cached per institute / student (cache.py).
 # The writes that change them invalidate the entry; the TTL covers the rest.
@@ -103,7 +106,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
+# Outermost: times every request (gzip and CORS included) and tags it with an id.
+app.add_middleware(observability.RequestLogMiddleware)
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -207,10 +213,8 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/ready")
-async def ready():
-    """Readiness: Supabase reachable, RAG_SERVER reachable (if configured), embedding
-    model loaded. 200 when Supabase and the model are ready, else 503."""
+async def _ready_checks() -> dict:
+    """Supabase reachable, RAG_SERVER reachable (None if not configured), model loaded."""
     from starlette.concurrency import run_in_threadpool
     from rag import rag_server_client
 
@@ -227,8 +231,46 @@ async def ready():
         "embedder_loaded": _warm["embedder"],
         "uptime_s": round(time.time() - _warm["started_at"]),
     }
-    ok = checks["supabase"] and checks["embedder_loaded"]
-    return JSONResponse({"ready": ok, **checks}, status_code=200 if ok else 503)
+    checks["ready"] = bool(checks["supabase"] and checks["embedder_loaded"])
+    return checks
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: 200 when Supabase answers and the embedding model is loaded, else
+    503 — each check listed either way."""
+    checks = await _ready_checks()
+    return JSONResponse(checks, status_code=200 if checks["ready"] else 503)
+
+
+@app.get("/admin/system-health")
+async def system_health(user=Depends(require_role("admin"))):
+    """Admin "System health" card: uptime, /ready checks, RAG_SERVER, the scheduled
+    jobs' last run (time, duration, outcome) and next run, and this process's request
+    stats for the last hour (count, 5xx errors, slow requests, p50/p95). Per process."""
+    from datetime import datetime, timezone
+    from scheduler import jobs as sched
+
+    checks = await _ready_checks()
+    running = sched._scheduler
+    next_runs = {}
+    if running is not None:
+        for j in running.get_jobs():
+            nrt = getattr(j, "next_run_time", None)
+            next_runs[j.id] = nrt.astimezone(timezone.utc).isoformat() if nrt else None
+    job_ids = sorted(set(next_runs) | set(sched.LAST_RUNS))
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "uptime_s": checks["uptime_s"],
+        "ready": checks["ready"],
+        "checks": {k: checks[k] for k in ("supabase", "rag_server", "embedder_loaded")},
+        "scheduler": {
+            "running": running is not None,
+            "jobs": [{"id": j, "last_run": sched.LAST_RUNS.get(j), "next_run": next_runs.get(j)}
+                     for j in job_ids],
+        },
+        "requests": observability.summary(),
+    }
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

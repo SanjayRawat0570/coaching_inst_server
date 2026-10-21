@@ -102,6 +102,7 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
    RATE_LIMIT_TEST_GEN=5/60  # test generations per user per 60 s
    WARM_START=1            # load the embedding model in the background at boot
    SCHEDULER_ENABLED=1     # 0 = don't run the scheduled jobs in this instance
+   SLOW_REQUEST_MS=2000    # requests slower than this are logged as warnings
    ```
    > Do **not** set `PORT` — Railway provides it.
    >
@@ -151,6 +152,16 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
   only if the service has the RAM (each worker loads its own copy of the model, about
   +300 MB): change the Dockerfile `CMD` to `uvicorn main:app --workers 2 …`. Running
   the `2026-10-22_jobs.sql` migration first keeps background jobs visible to all workers.
+- **Logs:** one line per request in Railway's log view —
+  `request id=… method=GET path=/progress status=200 ms=84 role=student` (route, status,
+  time and role only: no user ids, emails, tokens or query strings). Requests slower than
+  `SLOW_REQUEST_MS` are `WARNING … SLOW /route`. Every response carries `X-Request-ID`;
+  search the logs for it when a user reports a problem.
+- **System health:** the admin Analytics page has a card with uptime, the `/ready`
+  checks, RAG server status, each scheduled job's last run / duration / next run, and the
+  last hour's requests (5xx errors, slow requests, p50/p95). Per backend instance.
+- **Error tracking (optional):** Sentry's free tier can be added for backend and frontend
+  later — it's an outside service, so only with your go-ahead.
 - **Uptime ping (optional, free):** a free monitor such as UptimeRobot can call
   `https://<your-railway-domain>/health` every 5 minutes and email you when it's down.
   It's an outside service, so set it up only if you want one.

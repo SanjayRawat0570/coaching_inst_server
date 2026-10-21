@@ -270,3 +270,29 @@ teacher test generation as background jobs with live status; Recharts behind
 `next/dynamic`; Inter via `next/font`; scroll restoration; 40 px tap targets, visible
 keyboard focus, input labels, reduced motion; error boundary, offline banner, expired
 session -> /login with a message.
+
+## Phase 6 results (2026-10-22)
+
+- Request log line per request (id, method, route, status, ms, role — no personal data),
+  `X-Request-ID` on every response, `WARNING SLOW` above 2 s (streams judged by first byte).
+- `GET /admin/system-health` + a System health card on the admin Analytics page.
+- `scripts/loadtest.py`: N concurrent students, no new dependency; refuses doubts unless
+  RAG_SERVER_URL is local.
+
+Load test, 50 concurrent students, 20 s, ~1 s think time (in-process, real Supabase,
+token check skipped):
+
+| | First run | After the fix it found |
+|---|---|---|
+| Error rate | 2.4% (`/progress` 10.6%: ReadError / RemoteProtocolError) | 0.0% |
+| p50 / p95, all requests | 49 / 1934 ms | 42 / 156 ms |
+| `/progress` p50 / p95 | 174 / 4805 ms | 133 / 260 ms |
+| Throughput | 33.8 req/s | 39.7 req/s |
+
+Cause: newer supabase-py talks HTTP/2 to PostgREST, and one HTTP/2 connection shared by
+all request threads breaks under load. The shared client now uses a pooled HTTP/1.1
+connection where the library allows it (the pinned supabase 2.5 is HTTP/1.1 already).
+
+Found while load testing: the live database is missing `study_plans` (in schema.sql,
+never created) and the tables of migrations not yet run (`institute_secrets`,
+`study_materials`, `nta_cutoffs`, `student_memories`, `jobs`).
