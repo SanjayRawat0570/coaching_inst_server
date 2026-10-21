@@ -1,7 +1,7 @@
 """Parent Reporter — Sunday 8PM weekly progress report to every parent.
 
 Aggregates the week's activity, has the LLM write a warm plain-language paragraph
-(parents are not exam experts), sends it on WhatsApp with an email backup, and logs
+(parents are not exam experts), emails it to the parent, and logs
 it to parent_reports.
 """
 
@@ -59,11 +59,10 @@ def _report_html(name: str, report_text: str, summary: dict) -> str:
 def build_report(student: dict) -> dict:
     """Compose and send one parent report. Returns delivery status.
 
-    F8: emails the PARENT via Resend (the primary channel), and also sends a
-    WhatsApp nudge if a parent phone is on file. Includes scores, doubts and streak.
+    F8: emails the PARENT via Resend. Includes scores, doubts and streak.
     """
     from graph.llm import get_llm
-    from notifications import send_email, send_whatsapp
+    from notifications import send_email
 
     sb = _supabase()
     summary = _week_summary(sb, student["id"])
@@ -85,15 +84,13 @@ def build_report(student: dict) -> dict:
 
     week_start = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
 
-    # F8: email the PARENT via Resend; WhatsApp is a bonus channel if a phone exists.
+    # F8: email the PARENT via Resend.
     parent_email = student.get("parent_email")
     email_res = (send_email(parent_email, f"Weekly Progress Report — {name}",
                             _report_html(name, report_text, summary))
                  if parent_email else {"ok": False, "channel": "email", "error": "no parent email on file"})
-    wa_res = (send_whatsapp(student.get("parent_phone"), report_text)
-              if student.get("parent_phone") else {"ok": False, "channel": "whatsapp", "error": "no phone"})
-    delivered = bool(email_res.get("ok") or wa_res.get("ok"))
-    delivery = email_res if email_res.get("ok") else (wa_res if wa_res.get("ok") else email_res)
+    delivered = bool(email_res.get("ok"))
+    delivery = email_res
 
     try:
         sb.table("parent_reports").insert({
@@ -106,7 +103,7 @@ def build_report(student: dict) -> dict:
         print(f"[parent_report] log insert failed: {e}")
 
     return {"student_id": student["id"], "delivery": delivery,
-            "channels": {"email": email_res, "whatsapp": wa_res}, "report": report_text}
+            "channels": {"email": email_res}, "report": report_text}
 
 
 def parent_report_node(state: CoachingState) -> CoachingState:

@@ -83,7 +83,6 @@ def build_plan(student: dict) -> dict:
         f"{d.get('day')}: {d.get('focus')} — " + "; ".join(d.get("slots") or []) for d in days
     )
     notify(
-        to_phone=student.get("parent_phone"),
         to_email=student.get("email"),
         subject="Your Study Plan for This Week",
         body=text,

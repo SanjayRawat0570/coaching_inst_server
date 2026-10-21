@@ -79,7 +79,7 @@ def assess_student(student: dict) -> dict:
             f"A student named {student.get('name', 'the student')} is at risk of "
             f"disengaging (risk {risk}/100). Signals: {signals}.\n"
             f"Past wins to reference for motivation:\n{milestones or '(none yet)'}\n"
-            "Write a warm, 2-sentence WhatsApp nudge that references a past win if "
+            "Write a warm, 2-sentence nudge message that references a past win if "
             "available and invites them back. No preamble."
         ).content.strip()
     except Exception:

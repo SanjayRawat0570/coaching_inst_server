@@ -147,6 +147,7 @@ Colors and elevation are driven by design tokens in [tailwind.config.js](tailwin
 Deploys to **Vercel** as a standard Next.js app. If deploying this monorepo, set the
 project's **Root Directory to `frontend`**; if deploying the dedicated UI repo, the root
 is the repo itself. Set the three `NEXT_PUBLIC_*` env vars in the Vercel project, pointing
-`NEXT_PUBLIC_API_URL` at your **Railway** backend domain.
+`NEXT_PUBLIC_API_URL` at your backend's Hugging Face Space URL
+(`https://<user>-<space>.hf.space`). Vercel's free Hobby plan is enough.
 
-The backend deploys separately to Railway — see [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
+The backend deploys separately to Hugging Face Spaces (free) — see [`../DEPLOYMENT.md`](../DEPLOYMENT.md).

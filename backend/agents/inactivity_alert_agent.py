@@ -89,11 +89,10 @@ def assess_student(student: dict) -> dict:
     body = (f"Heads up about {name}: {why}. "
             "A quick nudge today can get them back on track.")
 
-    # Email the parent (WhatsApp first if a phone is on file, else email).
+    # Email the parent.
     parent_results = []
-    if student.get("parent_email") or student.get("parent_phone"):
+    if student.get("parent_email"):
         parent_results.append(notify(
-            to_phone=student.get("parent_phone"),
             to_email=student.get("parent_email"),
             subject=f"Check in on {name}",
             body=body,

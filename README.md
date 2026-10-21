@@ -1,3 +1,11 @@
+---
+# Hugging Face Spaces config (the backend is hosted there for free; see DEPLOYMENT.md)
+title: Smart Coaching API
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 # smrt_chng_platform
 
 AI-powered coaching institute management platform for India (JEE / NEET / competitive exams).

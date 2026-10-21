@@ -1,19 +1,25 @@
-name: Deploy to HuggingFace Spaces
+name: Deploy backend to Hugging Face Spaces (free)
+# Needs two repo settings (GitHub -> Settings -> Secrets and variables -> Actions):
+#   secret   HF_TOKEN  - a Hugging Face access token with "write" role
+#   variable HF_SPACE  - the Space id, e.g. your-hf-username/smart-coaching
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-      - name: Push to HuggingFace
+      - uses: actions/checkout@v4
+      - name: Push a snapshot to the Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
         run: |
+          # Push only the current tree as one commit: Spaces reject pushes whose
+          # history contains binary files, and the Space doesn't need our history.
           git config --global user.email "deploy@github.com"
           git config --global user.name "GitHub Actions"
-          git remote add hf https://USER:$HF_TOKEN@huggingface.co/spaces/YOUR_USERNAME/smart-coaching
-          git push hf main --force
+          git checkout --orphan hf-deploy
+          git commit -q -m "Deploy ${GITHUB_SHA::7}"
+          git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" hf-deploy:main

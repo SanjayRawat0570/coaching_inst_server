@@ -30,7 +30,7 @@ const FEATURES = [
   { icon: AlertTriangle, title: "At-Risk Detection", text: "Nightly engagement scoring flags a likely dropout up to seven days early." },
   { icon: TrendingUp, title: "AIR Rank Tracking", text: "A predicted All-India Rank that updates with every test a student attempts." },
   { icon: Layers, title: "Spaced Revision", text: "Auto-generated flashcards resurface a concept right before it fades." },
-  { icon: Mail, title: "Weekly Parent Reports", text: "A plain-language WhatsApp and email summary every Sunday, written by AI." },
+  { icon: Mail, title: "Weekly Parent Reports", text: "A plain-language email summary every Sunday, written by AI." },
   { icon: LayoutDashboard, title: "Teacher Dashboard", text: "A live class heatmap, the hottest doubts, and at-risk alerts in one view." },
 ];
 
@@ -76,7 +76,7 @@ const FAQS = [
   { q: "Where do the AI answers come from?", a: "Answers are grounded in NCERT content and your institute's own uploaded notes, so they stay aligned with what you actually teach — not random internet text." },
   { q: "How does at-risk detection work?", a: "A nightly job scores each student's engagement and performance trend, flagging anyone trending toward dropping off up to seven days early, so teachers can step in." },
   { q: "Is it really free to run?", a: "The platform is built entirely on free-tier infrastructure — Supabase, a self-hosted RAG service and free LLM APIs — so there is no per-seat or hosting cost to get started." },
-  { q: "Can parents see their child's progress?", a: "Yes. Every parent gets a plain-language weekly report by email and WhatsApp with scores, doubts asked and focus areas — generated automatically." },
+  { q: "Can parents see their child's progress?", a: "Yes. Every parent gets a plain-language weekly report by email with scores, doubts asked and focus areas — generated automatically." },
 ];
 
 const FOOTER_COLS = [

@@ -25,7 +25,7 @@ no vector store or retriever of its own.
 | Local embeddings | `all-MiniLM-L6-v2` for **non-RAG** features only: long-term memory, copy detection, doubt clustering, concept graph |
 | Memory | Working (last N turns) · Long-term (pgvector `student_memories`) · Episodic (Postgres) · chat memory (RAG_SERVER `conversation_id`) |
 | Jobs | APScheduler (timezone `Asia/Kolkata`) |
-| Notifications | Resend (email) + Twilio (WhatsApp) |
+| Notifications | Resend email (free tier). No WhatsApp: every provider for it is paid |
 | Voice | Browser Web Speech API (arrives pre-transcribed); Whisper optional (offline lecture transcription only) |
 
 ---
@@ -37,7 +37,7 @@ no vector store or retriever of its own.
 pip install -r requirements.txt
 
 # 2. Secrets — copy the template and fill in your free keys
-cp .env.example .env              # Supabase, RAG_SERVER, Groq/Gemini/OpenRouter, Resend, Twilio
+cp .env.example .env              # Supabase, RAG_SERVER, Groq/Gemini/OpenRouter, Resend
 
 # 3. Database — run schema.sql ONCE in the Supabase SQL editor (NOT auto-applied).
 #    On an existing database, run the files in migrations/ instead (see "Database").
@@ -67,7 +67,7 @@ retrieval fails soft (doubts show a friendly "busy" message; agents run without 
    Next.js UI  ──REST──▶ │           FastAPI            │ ──▶ Supabase (Postgres+Auth+Storage)
    (separate repo) ◀SSE─ │           main.py            │ ──▶ RAG_SERVER (X-API-Key, per institute)
                          │  Supabase-JWT auth + roles   │ ──▶ Groq/Gemini/OpenRouter
-                         └───────────────┬──────────────┘ ──▶ Resend / Twilio
+                         └───────────────┬──────────────┘ ──▶ Resend (email)
                                          │
                           ┌──────────────▼───────────────┐
                           │   LangGraph supervisor graph  │
@@ -131,7 +131,7 @@ Isolated subgraphs for independent testing/streaming:
 | `at_risk_agent` | Nightly engagement scoring → flags likely dropouts ~7 days early |
 | `inactivity_alert_agent` | Emails teacher+parent on 3-day no-login / skipped test |
 | `doubt_cluster_agent` | Clusters similar class doubts into "hot topics", each linked to its top RAG_SERVER source |
-| `parent_report_agent` | Weekly plain-language progress report (email + WhatsApp) |
+| `parent_report_agent` | Weekly plain-language progress report (email) |
 | `study_plan_agent` | Rebuilds each student's weekly timetable |
 
 Supporting: [graph/knowledge_graph.py](graph/knowledge_graph.py) (concept prerequisite graph).
@@ -239,7 +239,7 @@ Started on app boot via the FastAPI `lifespan` handler (timezone `Asia/Kolkata`)
 | Nightly 23:00 | `at_risk_agent.run_nightly` — flag dropouts 7 days early |
 | Nightly 21:00 | `inactivity_alert_agent.run_nightly` — 3-day no-login / skipped test |
 | Nightly 02:00 | `doubt_cluster_agent.run_nightly` — cluster similar doubts |
-| Sunday 20:00 | `parent_report_agent.run_weekly` — WhatsApp/email reports |
+| Sunday 20:00 | `parent_report_agent.run_weekly` — email reports |
 | Monday 07:00 | `study_plan_agent.run_weekly` — rebuild timetables |
 | Every 5 min | flashcard due-reminder checker |
 
@@ -302,46 +302,34 @@ SUPABASE_URL / SUPABASE_KEY / SUPABASE_SERVICE_KEY    # Auth + DB (service key =
 RAG_SERVER_URL                                        # hosted RAG_SERVER, without /api/v1
 RAG_SERVER_API_KEY / RAG_SERVER_TENANT                # default tenant + member key
 RAG_SERVER_TIMEOUT                                    # seconds per request (default 30)
-RESEND_API_KEY / TWILIO_*                             # Email + WhatsApp
+RESEND_API_KEY                                        # Email (free: 100/day)
 ```
 
-Removed: `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY` (delete them from Railway and
-your `.env`; `QDRANT_*` is only needed once, locally, if you run the Qdrant migration script).
+Removed: `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY` (delete them from your host's
+secrets and your `.env`; `QDRANT_*` is only needed once, locally, if you run the Qdrant migration script).
 
 ---
 
-## Deployment — Railway (native Python build, no Docker)
+## Deployment — Hugging Face Spaces (free)
 
-Deployed on **Railway** using its native **Railpack** builder — no Dockerfile:
+The backend runs free on a **Hugging Face Space** (Docker SDK, 2 vCPU / 16 GB RAM on
+the free CPU tier — enough for the local MiniLM model). It builds from the root
+[`Dockerfile`](../Dockerfile); the Space settings live in the front matter of the root
+[`README.md`](../README.md) (`sdk: docker`, `app_port: 8000`).
 
-| Setting | Value |
-|---------|-------|
-| Builder | Railpack (auto-detects Python via `requirements.txt`) |
-| Root Directory | the folder containing the backend (leave empty if the repo root *is* the backend) |
-| Build command | `pip install -r requirements.txt` |
-| Start command | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
-| Python | pinned to **3.11** via [`.python-version`](.python-version) |
-| Health check | `/health` |
-
-- **Do not set a `PORT` variable** — Railway injects it; the start command binds `$PORT`.
-- Set the env vars from [`.env.example`](.env.example) in the Railway dashboard: add
-  `RAG_SERVER_URL`, `RAG_SERVER_TIMEOUT`, and either `RAG_SERVER_API_KEY` +
-  `RAG_SERVER_TENANT` (single institute) or per-institute rows (see "Database");
-  remove `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY`.
+- Every push to `main` deploys via [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
+  (needs the `HF_TOKEN` secret and `HF_SPACE` variable in the GitHub repo).
+- Set the env vars from [`.env.example`](.env.example) as **Space secrets**
+  (Settings → Variables and secrets). Do not set `PORT`.
 - Run the SQL in `migrations/` in the Supabase SQL editor (creates the private
   Storage bucket `study-materials` too).
+- Free Spaces **sleep after 48 h without traffic**; the next request wakes it (takes
+  a minute or two). Scheduled jobs (APScheduler) only run while it is awake.
 - The hosted RAG_SERVER itself needs **no changes**. If it answers in extractive mode
   (no LLM configured there) answers are quotes from the notes — expected. If it loses
   its data after one of its own redeploys, use **Re-index** per file or **Re-index all**
   (admin) on the Study Material page: originals are re-sent from Supabase Storage.
-- The build is smaller now: no Qdrant client, CrossEncoder or Tavily stack.
-- Live: `https://coachinginstserver-production.up.railway.app` (`/health`, `/docs`).
 
-Full step-by-step (Railway + Vercel) is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
-The frontend deploys separately to **Vercel** from the
-[UI repo](https://github.com/SanjayRawat0570/coaching_inst_ui), with
-`NEXT_PUBLIC_API_URL` pointing at the Railway domain.
-
-> A root [`Dockerfile`](../Dockerfile) + [`../railway.json`](../railway.json) also exist
-> (for a Docker-based deploy / HuggingFace Spaces). They are unused by the native Railway
-> setup above — delete them if you only deploy via Railpack.
+Full step-by-step (Hugging Face + Vercel) is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
+The frontend deploys separately to **Vercel** (free Hobby plan), with
+`NEXT_PUBLIC_API_URL` pointing at the Space URL (`https://<user>-<space>.hf.space`).

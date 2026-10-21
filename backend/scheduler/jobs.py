@@ -3,7 +3,7 @@
   Nightly 11PM  -> at_risk_agent.run_nightly      (flag dropouts 7 days early)
   Nightly 9PM   -> inactivity_alert_agent.run_nightly (F7: email teacher+parent on 3-day no-login / skipped test)
   Nightly 2AM   -> doubt_cluster_agent.run_nightly (F3: cluster similar doubts)
-  Sunday 8PM    -> parent_report_agent.run_weekly  (WhatsApp progress to parents)
+  Sunday 8PM    -> parent_report_agent.run_weekly  (email progress to parents)
   Monday 7AM    -> study_plan_agent.run_weekly      (rebuild weekly timetables)
   Every 5 min   -> flashcard reminder checker
 """
@@ -47,12 +47,11 @@ def _flashcard_reminders():
     from notifications import notify
 
     sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
-    students = sb.table("students").select("id, name, email, parent_phone").execute().data or []
+    students = sb.table("students").select("id, name, email").execute().data or []
     for s in students:
         cards = due_cards(s["id"])
         if cards:
             notify(
-                to_phone=s.get("parent_phone"),
                 to_email=s.get("email"),
                 subject="Flashcards due",
                 body=f"{s.get('name','You')} have {len(cards)} flashcards to revise today.",
