@@ -296,3 +296,86 @@ connection where the library allows it (the pinned supabase 2.5 is HTTP/1.1 alre
 Found while load testing: the live database is missing `study_plans` (in schema.sql,
 never created) and the tables of migrations not yet run (`institute_secrets`,
 `study_materials`, `nta_cutoffs`, `student_memories`, `jobs`).
+
+---
+
+## Final report (2026-10-22)
+
+All numbers from the dev machine (TLS-intercepting network; Railway will differ in
+absolute terms, the ratios hold). Backend tests: 127 at the start -> **229**, all passing.
+
+### Backend latency, p50 (in-process bench, real Supabase, token check excluded)
+
+| Endpoint | Phase 0 | Final, first visit | Final, repeat visit (cache) | Supabase calls, Phase 0 -> final |
+|---|---|---|---|---|
+| /flashcards/due | 1767 ms | 58 ms | 55 ms | 2 + new client -> 1 |
+| /progress | 211 ms | 163 ms | 168 ms | 4 -> 3 |
+| /leaderboard | 156 ms | 59 ms | 10 ms | 3 -> 1 (0 cached) |
+| /teacher/overview | 392 ms | 120 ms | 15 ms | 4 -> 4 (0 cached) |
+| /teacher/students | 127 ms | 56 ms | 65 ms | 1 -> 1 |
+| /teacher/alerts | 500 error | 400 with a message | — | — |
+| /admin/analytics | 534 ms | 167 ms | 11 ms | 8 -> 7 (0 cached) |
+| /parent/report (1 child) | 542 ms | 192 ms | — | 8 -> 6 (2 children: 15 -> 6) |
+| /student/concept-map (6 weak concepts) | 787 ms | 127 ms | 7 ms | 18 -> 3 |
+
+### Other backend numbers
+
+| What | Phase 0 | Final |
+|---|---|---|
+| A new Supabase client per agent call | ~1.2 s each | shared client, ~50 ms per query |
+| First request needing embeddings | ~22 s (model load inline) | loaded in the background at boot |
+| LLM provider failure | error to the user, no fallback | next provider, 20 s timeout, failed one tried last for 60 s |
+| Grade 3 theory answers | 3450 ms | 1500 ms (parallel, same marks) |
+| /test/submit post-test agents | sum of 3 | the slowest one |
+| Slow AI endpoints | request held open | `?job=1` -> job id at once, `GET /jobs/{id}` |
+| 50 concurrent students (load test) | 2.4% errors, p95 1934 ms | 0% errors, p95 156 ms |
+| Docker torch download | 2,988 MB (CUDA) | 207 MB (CPU) |
+| MiniLM on a new container | downloaded on first use (~35 s) | baked into the image |
+| Scheduled jobs with 2+ workers | duplicated | run once (lock) |
+
+### Frontend
+
+| What | Phase 0 | Final |
+|---|---|---|
+| First Load JS: dashboard / analytics / progress | 259 / 257 / 252 kB | 167 / 165 / 166 kB |
+| First Load JS: / | 91.7 kB | 95.2 kB |
+| Lighthouse mobile `/` perf / a11y | 81 / 91 | 89 / 100 |
+| Lighthouse mobile `/login` perf / a11y | 96 / 96 | 94 / 100 |
+| Lighthouse desktop `/`, `/login` | not measured | 100 / 100 |
+| Page change | getUser() round trip + full-screen "Loading…" | instant (session read once) |
+
+### Files changed (Phases 0–7)
+
+75 files, +6,825 / −1,093 lines: 24 new (e.g. `backend/cache.py`, `jobs.py`,
+`ratelimit.py`, `concurrency.py`, `observability.py`, `scheduler/locks.py`,
+`scripts/bench.py`, `scripts/loadtest.py`, 2 migrations, 6 test files;
+`frontend/lib/hooks.ts`, `swrConfig.ts`, `components/Toast.tsx`, `Resilience.tsx`,
+`Markdown.tsx`, `SystemHealth.tsx`, `charts/*`) and 51 modified.
+
+### To run in Supabase (SQL editor)
+
+1. `study_plans` from `backend/schema.sql` (missing on the live database).
+2. `backend/migrations/*.sql` in the order listed in DEPLOYMENT.md (1–6 from the RAG
+   work, 7 `2026-10-22_performance_indexes.sql`, 8 `2026-10-22_jobs.sql`).
+
+### New environment variables (all optional, defaults in brackets)
+
+`GROQ_MODEL` [llama-3.3-70b-versatile — returns 404 today, set a current model],
+`GROQ_FAST_MODEL` [= GROQ_MODEL], `GEMINI_MODEL` [gemini-2.5-flash],
+`OPENROUTER_MODEL` [meta-llama/llama-3.3-70b-instruct:free — no longer free],
+`LLM_TIMEOUT` [20], `LLM_CONCURRENCY` [3], `JOB_WORKERS` [2],
+`RATE_LIMIT_DOUBT` [8/60], `RATE_LIMIT_TEST_GEN` [5/60], `SLOW_REQUEST_MS` [2000],
+`WARM_START` [1], `SCHEDULER_ENABLED` [1], `CACHE_DISABLED` [0].
+
+### Left for later / needs a decision
+
+- Pick current Groq / OpenRouter models (all three providers degraded on 2026-10-22).
+- The live Railway service returned 404 throughout; the new Dockerfile has not been
+  built yet (first Railway build is its test).
+- Security issues found in Phase 0 (teacher routes trust `institute_id` from the query
+  string; `/test/submit` and `/flashcards/review` lack ownership checks; admin analytics
+  lists every account platform-wide) — not fixed, they change behaviour.
+- Flashcard reminder job emails every 5 minutes while cards are due.
+- Not measured: `/doubt/stream`, `/test/generate`, `/test/submit` latency (write real
+  rows / need RAG_SERVER_URL), logged-in Lighthouse, HTTP-mode load test with tokens.
+- Sentry (optional, needs approval); persistent Shell layout; the "Later ideas" list.
