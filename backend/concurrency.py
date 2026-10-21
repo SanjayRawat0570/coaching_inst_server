@@ -24,3 +24,23 @@ def parallel_map(fn: Callable[[T], R], items: Iterable[T], limit: int | None = N
         return [fn(x) for x in items]
     with ThreadPoolExecutor(max_workers=min(limit or llm_concurrency(), len(items))) as pool:
         return list(pool.map(fn, items))
+
+
+def for_each(items: Iterable[T], fn: Callable[[T], R], label: str = "job",
+             batch_size: int = 50, limit: int | None = None) -> list:
+    """fn(item) for every item, in batches of batch_size, `limit` at a time.
+    One item failing is logged and gives None; the rest carry on."""
+    items = list(items)
+
+    def safe(x):
+        try:
+            return fn(x)
+        except Exception as e:
+            ident = x.get("id") if isinstance(x, dict) else x
+            print(f"[{label}] failed for {ident}: {e}")
+            return None
+
+    out: list = []
+    for i in range(0, len(items), batch_size):
+        out += parallel_map(safe, items[i:i + batch_size], limit=limit)
+    return out

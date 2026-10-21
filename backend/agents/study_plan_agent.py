@@ -117,11 +117,8 @@ def run_weekly() -> dict:
     """Scheduled Monday 7AM job — rebuild plans for everyone."""
     sb = _supabase()
     students = sb.table("students").select("*").execute().data or []
-    built = 0
-    for s in students:
-        try:
-            build_plan(s)
-            built += 1
-        except Exception as e:
-            print(f"[study_plan] failed for {s.get('id')}: {e}")
-    return {"students": len(students), "built": built}
+    from concurrency import for_each
+    done = object()  # build_plan's return value isn't used; this marks "no exception"
+    results = for_each(students, lambda s: (build_plan(s), done)[1], label="study_plan",
+                       limit=2)  # each emails; Resend free tier: 2 requests/second
+    return {"students": len(students), "built": sum(1 for r in results if r is done)}

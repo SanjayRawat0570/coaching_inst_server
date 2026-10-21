@@ -121,11 +121,7 @@ def run_nightly() -> dict:
     """Scheduled 11PM job — assess every student."""
     sb = _supabase()
     students = sb.table("students").select("*").execute().data or []
-    alerted = 0
-    for s in students:
-        try:
-            if assess_student(s).get("alerted"):
-                alerted += 1
-        except Exception as e:
-            print(f"[at_risk] failed for {s.get('id')}: {e}")
+    from concurrency import for_each
+    results = for_each(students, assess_student, label="at_risk")  # batched, a few at a time
+    alerted = sum(1 for r in results if r and r.get("alerted"))
     return {"assessed": len(students), "alerted": alerted}

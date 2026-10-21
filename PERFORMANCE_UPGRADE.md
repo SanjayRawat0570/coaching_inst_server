@@ -219,3 +219,20 @@ return empty answers (they spend the budget on reasoning).
 Provider status on 2026-10-22: Groq's default `llama-3.3-70b-versatile` returns 404;
 Gemini free tier allows 5 requests/min for gemini-2.5-flash; OpenRouter's
 `meta-llama/llama-3.3-70b-instruct:free` is no longer free (404).
+
+## Phase 4 results (2026-10-22)
+
+The image could not be built on the dev machine (Docker Desktop stopped, < 4 GB free),
+so the size numbers are measured download sizes of the exact wheels pip resolves for
+Linux / Python 3.11 — confirm on the first Railway build.
+
+| What | Before | After |
+|---|---|---|
+| torch download in the image | 2,988 MB (torch 2.14.1 555 MB + 19 CUDA packages 2,433 MB) | 207 MB (torch 2.14.1+cpu 196 MB + deps) |
+| MiniLM model on a new container | downloaded on first use (34.5 s here) | baked into the image (88 MB) |
+| Model load from disk | 16.3 s (hub still checked online) | 11.5 s (`HF_HUB_OFFLINE=1`) |
+| Build context | everything but frontend / .git | also drops backend/tests and dev requirements |
+| Scheduled jobs with 2+ workers | every worker runs every job (duplicate emails) | one runs, the others skip (advisory / file lock, held >= 60 s) |
+| Flashcard reminder trigger | interval from each process's start | cron */5, aligned across workers |
+| Per-student job loops | one student at a time | batches of 50, 3 at a time (2 for emailing jobs, 1 for the inactivity job) |
+| Job visibility | a print of the result | duration + outcome logged and kept in LAST_RUNS |

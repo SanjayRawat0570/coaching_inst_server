@@ -5,13 +5,43 @@
   Nightly 2AM   -> doubt_cluster_agent.run_nightly (F3: cluster similar doubts)
   Sunday 8PM    -> parent_report_agent.run_weekly  (email progress to parents)
   Monday 7AM    -> study_plan_agent.run_weekly      (rebuild weekly timetables)
-  Every 5 min   -> flashcard reminder checker
+  Every 5 min   -> flashcard reminder checker (cron */5, so workers fire together)
+
+Each job runs through scheduler.locks.run_exclusive (one worker / replica runs it,
+the others skip), in the scheduler's own threads — never on the API's. Duration and
+outcome are logged and kept in LAST_RUNS (for the admin health card).
 """
 
+import threading
+import time
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from scheduler.locks import SKIPPED, run_exclusive
+
 _scheduler: BackgroundScheduler | None = None
+
+LAST_RUNS: dict[str, dict] = {}
+_runs_lock = threading.Lock()
+
+
+def _guarded(job_id: str, fn):
+    """The job as the scheduler runs it: exclusive, timed, never raising."""
+    def run():
+        started, t0 = datetime.now(timezone.utc).isoformat(), time.perf_counter()
+        try:
+            out = run_exclusive(job_id, fn)
+            status = "skipped" if out == SKIPPED else "ok"
+        except Exception as e:  # a failing job must not kill the scheduler thread
+            print(f"[scheduler] {job_id} failed: {e}")
+            status = "failed"
+        duration = round(time.perf_counter() - t0, 2)
+        with _runs_lock:
+            LAST_RUNS[job_id] = {"started_at": started, "duration_s": duration, "status": status}
+        print(f"[scheduler] {job_id} {status} in {duration} s")
+    run.__name__ = f"guarded_{job_id}"
+    return run
 
 
 def _nightly_at_risk():
@@ -69,18 +99,21 @@ def start_scheduler() -> BackgroundScheduler:
     if _scheduler is not None:
         return _scheduler
 
-    scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-    scheduler.add_job(_nightly_at_risk, "cron", hour=23, minute=0, id="at_risk_nightly")
-    scheduler.add_job(_weekly_parent_reports, "cron", day_of_week="sun", hour=20,
-                      minute=0, id="parent_reports_weekly")
-    scheduler.add_job(_weekly_study_plans, "cron", day_of_week="mon", hour=7,
-                      minute=0, id="study_plans_weekly")
-    scheduler.add_job(_nightly_doubt_clusters, "cron", hour=2, minute=0,
-                      id="doubt_clusters_nightly")
-    scheduler.add_job(_nightly_inactivity_alerts, "cron", hour=21, minute=0,
-                      id="inactivity_alerts_nightly")
-    scheduler.add_job(_flashcard_reminders, "interval", minutes=5,
-                      id="flashcard_reminders")
+    # One run at a time per job; a run missed while busy happens once, late.
+    scheduler = BackgroundScheduler(timezone="Asia/Kolkata", job_defaults={
+        "coalesce": True, "max_instances": 1, "misfire_grace_time": 300})
+    jobs = [
+        ("at_risk_nightly", _nightly_at_risk, dict(hour=23, minute=0)),
+        ("parent_reports_weekly", _weekly_parent_reports, dict(day_of_week="sun", hour=20, minute=0)),
+        ("study_plans_weekly", _weekly_study_plans, dict(day_of_week="mon", hour=7, minute=0)),
+        ("doubt_clusters_nightly", _nightly_doubt_clusters, dict(hour=2, minute=0)),
+        ("inactivity_alerts_nightly", _nightly_inactivity_alerts, dict(hour=21, minute=0)),
+        # cron, not interval: an interval counts from each process's start, so
+        # several workers would fire minutes apart and the lock couldn't pair them.
+        ("flashcard_reminders", _flashcard_reminders, dict(minute="*/5")),
+    ]
+    for job_id, fn, when in jobs:
+        scheduler.add_job(_guarded(job_id, fn), "cron", id=job_id, **when)
     scheduler.start()
     _scheduler = scheduler
     print("[scheduler] started with jobs:", [j.id for j in scheduler.get_jobs()])

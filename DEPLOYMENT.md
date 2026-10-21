@@ -136,12 +136,24 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
 **Copy the Railway domain — the frontend needs it next.**
 
 ### Railway notes
-- **Memory:** the MiniLM embedding model (long-term memory, copy detection, doubt
-  clustering) loads on first use. Give the service **≥ 1 GB RAM** so it doesn't run out
-  of memory on that first request.
-- **Model cache:** the model downloads into `/tmp` at runtime (env vars set in the
-  Dockerfile). Expect a slow *first* request after each deploy, fast afterwards.
+- **Image:** CPU-only torch (the default Linux torch also downloads ~2.4 GB of CUDA
+  libraries this service never uses) and the MiniLM model baked in at build time, so a
+  new container never downloads it. The first build after this change takes a few
+  minutes; check the build log for `torch-…+cpu`.
+- **Memory:** the embedding model (long-term memory, copy detection, doubt clustering)
+  loads in the background at boot. Give the service **≥ 1 GB RAM**.
 - **Scheduler:** APScheduler runs in-process and starts on boot — no extra service.
+  Every job takes a lock first, so with several workers or replicas each job still runs
+  once (Postgres advisory lock via `SUPABASE_DB_URL` — use the **direct** connection on
+  port 5432, not the transaction pooler on 6543 — or a file lock inside one container).
+- **Workers:** the image runs **one** uvicorn worker. The response cache, rate limits
+  and in-memory jobs are per process, so extra workers each keep their own. Raise it
+  only if the service has the RAM (each worker loads its own copy of the model, about
+  +300 MB): change the Dockerfile `CMD` to `uvicorn main:app --workers 2 …`. Running
+  the `2026-10-22_jobs.sql` migration first keeps background jobs visible to all workers.
+- **Uptime ping (optional, free):** a free monitor such as UptimeRobot can call
+  `https://<your-railway-domain>/health` every 5 minutes and email you when it's down.
+  It's an outside service, so set it up only if you want one.
 - **Health vs ready:** `/health` answers instantly (Railway's health check uses it).
   `/ready` returns 200 once Supabase answers and the embedding model has loaded
   (about 20–45 s after a deploy), else 503 with each check listed.

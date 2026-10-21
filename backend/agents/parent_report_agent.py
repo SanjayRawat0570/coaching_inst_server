@@ -162,11 +162,8 @@ def run_weekly() -> dict:
     """Scheduled Sunday 8PM job — report to every parent."""
     sb = _supabase()
     students = sb.table("students").select("*").execute().data or []
-    sent = 0
-    for s in students:
-        try:
-            if build_report(s)["delivery"].get("ok"):
-                sent += 1
-        except Exception as e:
-            print(f"[parent_report] failed for {s.get('id')}: {e}")
+    from concurrency import for_each
+    # 2 at a time: each sends an email, and Resend's free tier allows 2 requests/second.
+    results = for_each(students, build_report, label="parent_report", limit=2)
+    sent = sum(1 for r in results if r and r["delivery"].get("ok"))
     return {"students": len(students), "sent": sent}

@@ -14,6 +14,14 @@ frontend
 **/__pycache__
 *.py[cod]
 *.egg-info
+**/.pytest_cache
+**/node_modules
+
+# Not needed at runtime
+backend/tests
+backend/pytest.ini
+backend/requirements-dev.txt
+backend/requirements-verify.txt
 
 # Model / RAG caches (downloaded at runtime into /tmp)
 tmp/

@@ -124,13 +124,10 @@ def run_nightly() -> dict:
     """Scheduled job — check every student, email teacher+parent on a hit."""
     sb = _supabase()
     students = sb.table("students").select("*").execute().data or []
-    details = []
-    for s in students:
-        try:
-            r = assess_student(s)
-            if r.get("alerted"):
-                details.append({"name": s.get("name"), "email": s.get("email"),
-                                "reasons": r["reasons"]})
-        except Exception as e:
-            print(f"[inactivity] failed for {s.get('id')}: {e}")
+    from concurrency import for_each
+    # One at a time, as before: no LLM here, so in parallel the emails would burst past
+    # Resend's free-tier 2 requests/second.
+    results = for_each(students, assess_student, label="inactivity", limit=1)
+    details = [{"name": s.get("name"), "email": s.get("email"), "reasons": r["reasons"]}
+               for s, r in zip(students, results) if r and r.get("alerted")]
     return {"assessed": len(students), "alerted": len(details), "details": details}
