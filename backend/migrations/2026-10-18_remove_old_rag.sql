@@ -5,6 +5,8 @@
 -- to pgvector here, so Qdrant can be switched off. Copy existing memories with:
 --   python -m scripts.migrate_to_rag_server --memories --dry-run   (then without --dry-run)
 
+CREATE EXTENSION IF NOT EXISTS vector;   -- pgvector, for VECTOR(384) below
+
 CREATE TABLE IF NOT EXISTS student_memories (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   student_id  UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
