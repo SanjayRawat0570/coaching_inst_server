@@ -1,11 +1,3 @@
----
-# Hugging Face Spaces config (the backend is hosted there for free; see DEPLOYMENT.md)
-title: Smart Coaching API
-sdk: docker
-app_port: 8000
-pinned: false
----
-
 # smrt_chng_platform
 
 AI-powered coaching institute management platform for India (JEE / NEET / competitive exams).
@@ -21,7 +13,7 @@ tracking, at-risk detection, parent reports, answer evaluation, and AIR rank pre
   conversation memory) used over HTTP; teachers upload notes / NCERT / PYQs on the
   Study Material page. See [backend/README.md](backend/README.md#rag-rag_server-is-the-only-retrieval-rag).
 - **Orchestration:** LangGraph (Supervisor+Worker, Parallel, HITL, Streaming)
-- **Backend:** FastAPI + APScheduler on HuggingFace Spaces (Docker)
+- **Backend:** FastAPI + APScheduler on Railway (Docker)
 - **Frontend:** Next.js 14 + Expo React Native on Vercel
 
 ## Setup

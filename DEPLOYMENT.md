@@ -1,110 +1,138 @@
-# Deployment — 100% free: Backend on Hugging Face Spaces, Frontend on Vercel
+# Deployment — Backend on Railway, Frontend on Vercel
 
-Two services, deployed independently, both on free plans (no credit card):
+Two services, deployed independently. Both redeploy automatically on every push to the
+branch they are connected to (no GitHub Actions needed):
 
 ```
-  Vercel (Next.js)  ──HTTPS──▶  Hugging Face Space (FastAPI/Docker)  ──▶ Supabase · RAG_SERVER · LLMs · Resend
-  NEXT_PUBLIC_API_URL ────────────────^ (https://<user>-<space>.hf.space)
+  Vercel (Next.js)  ──HTTPS──▶  Railway (FastAPI/Docker)  ──▶ Supabase · RAG_SERVER · LLMs · Resend
+  NEXT_PUBLIC_API_URL ────────────────^ (Railway public URL)
 ```
 
-Order matters: **deploy the backend first**, grab its public URL, then give that URL
-to the frontend as `NEXT_PUBLIC_API_URL`.
+Order matters: **set up Supabase, then the backend**, grab its public URL, then give that
+URL to the frontend as `NEXT_PUBLIC_API_URL`.
+
+The **RAG_SERVER** is a separate, already-hosted service. It is used as-is over HTTP —
+nothing in this guide changes its code, settings, env vars or deployment.
 
 ---
 
-## What everything costs
+## 1 — Supabase (database + storage)
 
-| Service | Used for | Plan | Card needed? |
-|---|---|---|---|
-| Hugging Face Spaces | Backend hosting (2 vCPU, 16 GB RAM) | Free CPU basic | No |
-| Vercel | Frontend hosting | Hobby (free) | No |
-| Supabase | Auth, Postgres + pgvector, Storage | Free | No |
-| Groq / Gemini / OpenRouter | LLMs (fallback chain) | Free tiers | No |
-| Resend | Parent / teacher emails | Free, 100/day, 3000/month | No |
-| RAG_SERVER | Doubts, study material search | Your own service — host it on a free plan too | — |
+### New project
+Run [`backend/schema.sql`](backend/schema.sql) once in the **SQL editor**. It creates every
+table and the Storage bucket below. Nothing is applied automatically.
 
-There is no WhatsApp channel: every WhatsApp provider is paid, so the app sends email only.
+### Existing project (upgrading this branch)
+Run these files from [`backend/migrations/`](backend/migrations/) in the SQL editor,
+**in this order** (each is safe to re-run):
 
-### Free-plan limits to know
-- **Hugging Face:** a free Space **sleeps after 48 h without traffic**. The next request
-  wakes it (1–2 minutes). Scheduled jobs (weekly reports, nightly alerts) only run while
-  it is awake. A Space is public by default — it only exposes the API, and every
-  endpoint already requires a Supabase login, so that's fine.
-- **Supabase:** a free project **pauses after 7 days with no activity**; un-pause it in
-  the dashboard. 500 MB database, 1 GB storage.
-- **Vercel Hobby** is meant for personal / non-commercial use. If the institute starts
-  charging money through the site, move the frontend to Cloudflare Pages or Netlify
-  (both have free commercial-use plans).
-- **Resend** without your own domain can only send from `onboarding@resend.dev`, and only
-  to the email you signed up with. Verify a domain (free) to email real parents.
+| # | File | What it adds |
+|---|------|--------------|
+| 1 | `2026-10-17_rag_server.sql` | `institutes.rag_tenant`, `institute_secrets` (per-institute RAG_SERVER key) |
+| 2 | `2026-10-18_doubt_rag_server.sql` | `doubt_logs` citations, answerable, rag_confidence, conversation_id, rating; index for `content_gap` alerts |
+| 3 | `2026-10-18_study_materials.sql` | `study_materials` table + the `study-materials` Storage bucket |
+| 4 | `2026-10-18_grounded_agents.sql` | `flashcards.source`, `nta_cutoffs` table (rank predictor) |
+| 5 | `2026-10-18_remove_old_rag.sql` | `student_memories` (pgvector long-term memory, replaces Qdrant) |
+| 6 | `2026-10-18_insights.sql` | `doubt_clusters.source` (each hot topic's top RAG_SERVER source) |
 
----
+### Storage bucket
+The app stores teachers' original study-material files in a **private** bucket named
+**`study-materials`** (50 MB per file). Migration 3 (and `schema.sql`) creates it. If
+your project doesn't allow creating buckets from SQL, create it by hand:
+**Storage → New bucket → name `study-materials`, Public = off, file size limit 50 MB.**
+Don't add any Storage policies — only the backend (service-role key) reads and writes it.
 
-## Prerequisites (one-time)
-
-- **Supabase** project — run [`backend/schema.sql`](backend/schema.sql) once in the SQL editor
-  (existing DB: the files in [`backend/migrations/`](backend/migrations/)). This also creates
-  the private Storage bucket `study-materials`.
-- **RAG_SERVER** (hosted, used as-is) — its URL, plus a tenant + `member` API key per
-  institute that you create with your RAG_SERVER login (`POST /api/v1/tenants`,
-  `POST /api/v1/security/api-keys`).
-- **LLM keys** — Groq (and/or Gemini, OpenRouter). All free sign-ups.
-- Optional: **Resend** (email).
-- A free **Hugging Face** account and a free **Vercel** account.
+### NTA cutoffs (rank predictor)
+The rank predictor reads the `nta_cutoffs` table. Fill it from a CSV with
+`python -m scripts.import_nta_cutoffs <file.csv>` (run from `backend/`).
 
 ---
 
-## 1 — Backend → Hugging Face Spaces
+## 2 — Backend → Railway
 
-The Space builds from the root [`Dockerfile`](Dockerfile). Its settings are in the front
-matter at the top of the root [`README.md`](README.md) (`sdk: docker`, `app_port: 8000`).
+Railway builds the root [`Dockerfile`](Dockerfile), configured by
+[`railway.json`](railway.json) (health check `/health`, restart on failure). The Dockerfile
+binds uvicorn to Railway's `$PORT` (falls back to 8000).
 
-1. On huggingface.co: **New → Space** → name it (e.g. `smart-coaching`), SDK **Docker**
-   (blank template), hardware **CPU basic · free**.
-2. **Settings → Variables and secrets** → add each as a **secret**:
+1. **New Project → Deploy from GitHub repo** → pick this repo
+   (`SanjayRawat0570/coaching_inst_server`). Leave **Root Directory** empty.
+2. Railway picks up `railway.json` and the `Dockerfile`. No build command needed.
+3. **Variables** → set these (Raw Editor makes this fast):
 
    ```
+   # LLMs (fallback chain: Groq -> Gemini -> OpenRouter; at least one required)
    GROQ_API_KEY=...
    GEMINI_API_KEY=...
    OPENROUTER_API_KEY=...
+
+   # Supabase
    SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
    SUPABASE_KEY=your_anon_key
-   SUPABASE_SERVICE_KEY=your_service_role_key
+   SUPABASE_SERVICE_KEY=your_service_role_key        # backend only, bypasses RLS
    SUPABASE_DB_URL=postgresql://postgres:PASSWORD@db.YOUR_PROJECT_ID.supabase.co:5432/postgres
-   RAG_SERVER_URL=https://your-rag-server.example.com
-   RAG_SERVER_API_KEY=sk-...        # default tenant's member key (or per-institute rows)
-   RAG_SERVER_TENANT=smartcoaching
+
+   # RAG_SERVER (the only RAG)
+   RAG_SERVER_URL=https://your-rag-server.up.railway.app   # base URL, without /api/v1
+   RAG_SERVER_API_KEY=sk-...                               # default tenant's "member" key
+   RAG_SERVER_TENANT=smartcoaching                         # tenant that key belongs to
    RAG_SERVER_TIMEOUT=30
+
+   # Email (parent reports, alerts, reminders)
    RESEND_API_KEY=...
+
+   # App config
    APP_ENV=production
+   AT_RISK_THRESHOLD=70
+   REVIEWER_MAX_ITERATIONS=3
+   SESSION_TIMEOUT_MINUTES=30
+   WORKING_MEMORY_TURNS=10
+   INACTIVE_ALERT_DAYS=3
    ```
-   > Do **not** set `PORT`.
+   > Do **not** set `PORT` — Railway provides it.
+   >
+   > Institutes with their own RAG_SERVER tenant get it from the database instead
+   > (`institutes.rag_tenant` + `institute_secrets.rag_api_key`). `RAG_SERVER_API_KEY` /
+   > `RAG_SERVER_TENANT` are the default for every account without one.
 
-3. Connect GitHub so pushes deploy automatically
-   ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)):
-   - Hugging Face → **Settings → Access Tokens** → new token, role **Write**.
-   - GitHub repo → **Settings → Secrets and variables → Actions**:
-     - secret `HF_TOKEN` = that token
-     - variable `HF_SPACE` = `your-hf-username/smart-coaching`
-   - Push to `main` (or run the workflow by hand from the **Actions** tab).
-4. Wait for the build in the Space's **Logs** tab (the ML deps make the first build a few
-   minutes). Then verify:
+4. **Delete these old variables** if they are still set — nothing reads them any more:
 
    ```
-   https://<user>-<space>.hf.space/health   ->  {"status":"ok"}
-   https://<user>-<space>.hf.space/docs     ->  interactive API docs
+   QDRANT_URL
+   QDRANT_API_KEY
+   TAVILY_API_KEY
+   TWILIO_ACCOUNT_SID
+   TWILIO_AUTH_TOKEN
+   TWILIO_WHATSAPP_FROM
    ```
+   (`QDRANT_*` is only used once, locally, by `scripts/migrate_to_rag_server.py` if you
+   export the old Qdrant data — never on Railway.)
 
-**Copy that `.hf.space` URL — the frontend needs it next.**
+5. **Settings → Networking → Generate Domain** (already done for the live service:
+   `https://coachinginstserver-production.up.railway.app`).
+6. Wait for the build, then verify:
 
-### Notes / gotchas
-- **Model cache:** the MiniLM model downloads into `/tmp` at runtime (env vars already set
-  in the Dockerfile). Expect a slow *first* request after each wake-up, fast afterwards.
-- **Scheduler:** APScheduler runs in-process and starts on boot — no extra service needed.
+   ```
+   https://<your-railway-domain>/health   ->  {"status":"ok"}
+   https://<your-railway-domain>/docs     ->  interactive API docs
+   ```
+   As an admin user, `GET /admin/rag/health` should report the RAG_SERVER as
+   `configured` and `reachable`.
+
+**Copy the Railway domain — the frontend needs it next.**
+
+### Railway notes
+- **Memory:** the MiniLM embedding model (long-term memory, copy detection, doubt
+  clustering) loads on first use. Give the service **≥ 1 GB RAM** so it doesn't run out
+  of memory on that first request.
+- **Model cache:** the model downloads into `/tmp` at runtime (env vars set in the
+  Dockerfile). Expect a slow *first* request after each deploy, fast afterwards.
+- **Scheduler:** APScheduler runs in-process and starts on boot — no extra service.
+- **Email:** notifications are email-only (Resend). Without a verified domain, Resend
+  only delivers to the address you signed up with — verify a domain to email parents.
 
 ---
 
-## 2 — Frontend → Vercel (Hobby, free)
+## 3 — Frontend → Vercel
 
 1. **Add New… → Project** → import the frontend repo.
    - Using the **dedicated UI repo** (`coaching_inst_ui`): Root Directory = repo root.
@@ -115,23 +143,24 @@ matter at the top of the root [`README.md`](README.md) (`sdk: docker`, `app_port
    ```
    NEXT_PUBLIC_SUPABASE_URL = https://YOUR_PROJECT_ID.supabase.co
    NEXT_PUBLIC_SUPABASE_KEY = your_anon_public_key
-   NEXT_PUBLIC_API_URL      = https://<user>-<space>.hf.space     # from step 1.4
+   NEXT_PUBLIC_API_URL      = https://<your-railway-domain>     # from step 2
    ```
-   > `NEXT_PUBLIC_*` are inlined at **build time** — if you change `NEXT_PUBLIC_API_URL`
-   > later, **redeploy** the frontend.
+   > `NEXT_PUBLIC_*` are inlined at **build time** — after changing `NEXT_PUBLIC_API_URL`,
+   > **redeploy** the frontend. Never put the service-role key or any RAG_SERVER key here.
 
 4. **Deploy.** Open the Vercel URL and log in to confirm the dashboards load data.
 
 ---
 
-## 3 — Connect & verify
+## 4 — Connect & verify
 
-1. The backend already allows all origins (`CORS allow_origins=["*"]`), so the Vercel
-   domain works out of the box. To lock it down later, restrict origins in
+1. The backend allows all origins (`CORS allow_origins=["*"]`), so the Vercel domain works
+   out of the box. To lock it down later, restrict origins in
    [`backend/main.py`](backend/main.py) to your Vercel domain.
 2. Smoke test end-to-end:
    - Sign up (student) on the Vercel site → lands on the student dashboard.
-   - Ask a doubt → confirms Vercel → Space → LLM/RAG → response works.
+   - Ask a doubt → confirms Vercel → Railway → RAG_SERVER/LLM → answer with sources.
+   - As a teacher, upload a PDF on **Study Material** → status goes to *ready*.
    - As a teacher, generate + approve a test; as the student, take it.
 
 ---
@@ -140,10 +169,10 @@ matter at the top of the root [`README.md`](README.md) (`sdk: docker`, `app_port
 
 | | Backend | Frontend |
 |---|---------|----------|
-| Host | Hugging Face Spaces (free) | Vercel Hobby (free) |
-| Build | Root `Dockerfile` | Next.js (auto) |
-| Deploys on | push to `main` (GitHub Action) | push (Vercel Git integration) |
-| Port | `8000` (`app_port` in README front matter) | n/a |
+| Host | Railway | Vercel |
+| Build | Root `Dockerfile` (`railway.json`) | Next.js (auto) |
+| Deploys on | push to the connected branch | push to the connected branch |
+| Port | `$PORT` (Railway-provided) | n/a |
 | Health | `/health` | — |
-| Key env | `SUPABASE_*`, `RAG_SERVER_*`, `GROQ_API_KEY` | `NEXT_PUBLIC_*` |
-| Depends on | — | Space URL via `NEXT_PUBLIC_API_URL` |
+| Key env | `SUPABASE_*`, `RAG_SERVER_*`, `GROQ_API_KEY`, `RESEND_API_KEY` | `NEXT_PUBLIC_*` |
+| Depends on | Supabase, RAG_SERVER | Railway URL via `NEXT_PUBLIC_API_URL` |

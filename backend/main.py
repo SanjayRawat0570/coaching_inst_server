@@ -1,7 +1,7 @@
 """Smart Coaching Platform — FastAPI entry point.
 
 Runs all endpoints + Supabase Auth + SSE streaming + APScheduler jobs.
-Local: uvicorn main:app --reload --port 8000   |   HF Spaces: port 7860 (Dockerfile)
+Local: uvicorn main:app --reload --port 8000   |   Railway: $PORT (Dockerfile)
 """
 
 import os

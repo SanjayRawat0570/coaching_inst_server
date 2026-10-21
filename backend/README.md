@@ -305,31 +305,42 @@ RAG_SERVER_TIMEOUT                                    # seconds per request (def
 RESEND_API_KEY                                        # Email (free: 100/day)
 ```
 
-Removed: `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY` (delete them from your host's
-secrets and your `.env`; `QDRANT_*` is only needed once, locally, if you run the Qdrant migration script).
+Removed: `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY` (delete them from Railway and
+your `.env`; `QDRANT_*` is only needed once, locally, if you run the Qdrant migration script).
 
 ---
 
-## Deployment — Hugging Face Spaces (free)
+## Deployment — Railway
 
-The backend runs free on a **Hugging Face Space** (Docker SDK, 2 vCPU / 16 GB RAM on
-the free CPU tier — enough for the local MiniLM model). It builds from the root
-[`Dockerfile`](../Dockerfile); the Space settings live in the front matter of the root
-[`README.md`](../README.md) (`sdk: docker`, `app_port: 8000`).
+Railway builds the root [`Dockerfile`](../Dockerfile), configured by
+[`../railway.json`](../railway.json) (health check `/health`, restart on failure).
+Railway redeploys automatically on every push to the connected branch.
 
-- Every push to `main` deploys via [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
-  (needs the `HF_TOKEN` secret and `HF_SPACE` variable in the GitHub repo).
-- Set the env vars from [`.env.example`](.env.example) as **Space secrets**
-  (Settings → Variables and secrets). Do not set `PORT`.
+| Setting | Value |
+|---------|-------|
+| Builder | Dockerfile (from `railway.json`) |
+| Root Directory | empty (repo root, where `Dockerfile` + `railway.json` live) |
+| Start command | from the Dockerfile: `uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}` |
+| Health check | `/health` |
+
+- **Do not set a `PORT` variable** — Railway injects it and the Dockerfile binds it.
+- Set the env vars from [`.env.example`](.env.example) in the Railway dashboard: add
+  `RAG_SERVER_URL`, `RAG_SERVER_TIMEOUT`, and either `RAG_SERVER_API_KEY` +
+  `RAG_SERVER_TENANT` (single institute) or per-institute rows (see "Database");
+  remove `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY` and `TWILIO_*`.
 - Run the SQL in `migrations/` in the Supabase SQL editor (creates the private
   Storage bucket `study-materials` too).
-- Free Spaces **sleep after 48 h without traffic**; the next request wakes it (takes
-  a minute or two). Scheduled jobs (APScheduler) only run while it is awake.
 - The hosted RAG_SERVER itself needs **no changes**. If it answers in extractive mode
   (no LLM configured there) answers are quotes from the notes — expected. If it loses
   its data after one of its own redeploys, use **Re-index** per file or **Re-index all**
   (admin) on the Study Material page: originals are re-sent from Supabase Storage.
+- Live: `https://coachinginstserver-production.up.railway.app` (`/health`, `/docs`).
 
-Full step-by-step (Hugging Face + Vercel) is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
-The frontend deploys separately to **Vercel** (free Hobby plan), with
-`NEXT_PUBLIC_API_URL` pointing at the Space URL (`https://<user>-<space>.hf.space`).
+> If the Railway service's Root Directory is set to `backend/` instead, Railway ignores
+> the root `railway.json` and uses its native Railpack Python build
+> (`pip install -r requirements.txt`, Python from [`.python-version`](.python-version));
+> then set the start command to `uvicorn main:app --host 0.0.0.0 --port $PORT` yourself.
+
+Full step-by-step (Railway + Vercel) is in [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
+The frontend deploys separately to **Vercel**, with `NEXT_PUBLIC_API_URL` pointing at
+the Railway domain.

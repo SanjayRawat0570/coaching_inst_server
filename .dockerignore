@@ -1,4 +1,4 @@
-# Keep the Hugging Face Spaces Docker build context small & fast.
+# Keep the Railway/HF Docker build context small & fast.
 # Build context is the repo root; the backend Dockerfile only needs backend/.
 .git
 .github
@@ -20,7 +20,7 @@ tmp/
 *.pt
 *.bin
 
-# Secrets & local docs (env vars are set as Space secrets)
+# Secrets & local docs (env vars are set in the Railway dashboard)
 .env
 *.env
 !.env.example
