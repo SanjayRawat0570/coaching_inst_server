@@ -55,7 +55,7 @@ Railway builds the root [`Dockerfile`](Dockerfile), configured by
 binds uvicorn to Railway's `$PORT` (falls back to 8000).
 
 1. **New Project → Deploy from GitHub repo** → pick this repo
-   (`SanjayRawat0570/coaching_inst_server`). Leave **Root Directory** empty.
+   ([`SanjayRawat0570/coaching_inst_server`](https://github.com/SanjayRawat0570/coaching_inst_server)). Leave **Root Directory** empty.
 2. Railway picks up `railway.json` and the `Dockerfile`. No build command needed.
 3. **Variables** → set these (Raw Editor makes this fast):
 
@@ -135,7 +135,7 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
 ## 3 — Frontend → Vercel
 
 1. **Add New… → Project** → import the frontend repo.
-   - Using the **dedicated UI repo** (`coaching_inst_ui`): Root Directory = repo root.
+   - Using the **dedicated UI repo** ([`coaching_inst_ui`](https://github.com/SanjayRawat0570/coaching_inst_ui)): Root Directory = repo root.
    - Using **this monorepo**: set **Root Directory = `frontend`**.
 2. Framework preset: **Next.js** (auto-detected). Build = `next build`, output auto.
 3. **Environment Variables** (Production + Preview):

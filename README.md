@@ -16,6 +16,21 @@ tracking, at-risk detection, parent reports, answer evaluation, and AIR rank pre
 - **Backend:** FastAPI + APScheduler on Railway (Docker)
 - **Frontend:** Next.js 14 + Expo React Native on Vercel
 
+## Repositories
+
+| Repo | What | Deploys to |
+|------|------|------------|
+| [coaching_inst_server](https://github.com/SanjayRawat0570/coaching_inst_server) (this repo, git remote `origin`) | Backend (`backend/`) + a copy of the frontend (`frontend/`) | Railway |
+| [coaching_inst_ui](https://github.com/SanjayRawat0570/coaching_inst_ui) (git remote `ui`) | The frontend only, at the repo root | Vercel |
+
+`frontend/` here is the source of truth. To publish it to the UI repo as a new commit on
+top of the UI repo's `main` (keeps that repo's history):
+
+```bash
+git fetch ui
+git push ui "$(git commit-tree HEAD:frontend -p ui/main -m 'Sync frontend from coaching_inst_server')":refs/heads/main
+```
+
 ## Setup
 
 ```bash
