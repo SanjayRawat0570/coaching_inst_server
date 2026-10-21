@@ -4,7 +4,6 @@ F1: builds a structured 7-day plan with Groq, persists it to `study_plans` (so t
 student dashboard can show it), notifies the student, and also runs weekly for all.
 """
 
-import os
 import json
 from datetime import date, timedelta
 
@@ -14,8 +13,8 @@ DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sun
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _week_start() -> str:

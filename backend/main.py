@@ -5,18 +5,40 @@ Local: uvicorn main:app --reload --port 8000   |   Railway: $PORT (Dockerfile)
 """
 
 import os
+import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
 from auth.supabase_auth import get_current_user, require_role, get_supabase  # noqa: E402
+
+# Warm-start state, reported by /ready.
+_warm = {"supabase": False, "embedder": False, "started_at": time.time()}
+
+
+def _warm_up() -> None:
+    """Build the shared Supabase client and load the MiniLM model in the background,
+    so the first real requests don't pay for them. Never blocks startup."""
+    try:
+        get_supabase()
+        _warm["supabase"] = True
+    except Exception as e:
+        print(f"[main] warm-up: Supabase client failed: {e}")
+    try:
+        from rag.embedder import get_embedder
+        get_embedder()
+        _warm["embedder"] = True
+    except Exception as e:
+        print(f"[main] warm-up: embedding model failed to load: {e}")
 
 
 @asynccontextmanager
@@ -24,22 +46,46 @@ async def lifespan(app: FastAPI):
     if not os.getenv("RAG_SERVER_URL"):
         print("[main] WARNING: RAG_SERVER_URL is not set - RAG_SERVER is disabled, so "
               "nothing can be retrieved from study material. See .env.example.")
-    # Start scheduled jobs on boot
-    try:
-        from scheduler.jobs import start_scheduler, shutdown_scheduler
-        start_scheduler()
-    except Exception as e:
-        print(f"[main] scheduler not started: {e}")
-        shutdown_scheduler = lambda: None  # noqa: E731
+    if os.getenv("WARM_START", "1") != "0":
+        threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
+    # Start scheduled jobs on boot (SCHEDULER_ENABLED=0 turns them off, e.g. for a
+    # local run against the real database, which would otherwise send emails).
+    shutdown_scheduler = lambda: None  # noqa: E731
+    if os.getenv("SCHEDULER_ENABLED", "1") == "0":
+        print("[main] scheduler disabled (SCHEDULER_ENABLED=0)")
+    else:
+        try:
+            from scheduler.jobs import start_scheduler, shutdown_scheduler
+            start_scheduler()
+        except Exception as e:
+            print(f"[main] scheduler not started: {e}")
     yield
     try:
         shutdown_scheduler()
     except Exception:
         pass
+    from rag import rag_server_client
+    await rag_server_client.aclose()
+
+
+class _GZipExceptStreams:
+    """GZip JSON responses over ~1 KB, but never the SSE doubt stream: gzip buffers
+    small chunks, which would hold tokens back instead of streaming them."""
+
+    def __init__(self, app, minimum_size: int = 1000, skip_paths: tuple[str, ...] = ()):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+        self.skip_paths = skip_paths
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") not in self.skip_paths:
+            return await self.gzip(scope, receive, send)
+        return await self.app(scope, receive, send)
 
 
 app = FastAPI(title="Smart Coaching Platform", version="1.0.0", lifespan=lifespan)
 
+app.add_middleware(_GZipExceptStreams, minimum_size=1000, skip_paths=("/doubt/stream",))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -146,7 +192,32 @@ class ProfileUpdateRequest(BaseModel):
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
+    """Liveness for Railway's health check — instant, touches nothing."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: Supabase reachable, RAG_SERVER reachable (if configured), embedding
+    model loaded. 200 when Supabase and the model are ready, else 503."""
+    from starlette.concurrency import run_in_threadpool
+    from rag import rag_server_client
+
+    def _db_ok() -> bool:
+        try:
+            get_supabase().table("institutes").select("id").limit(1).execute()
+            return True
+        except Exception:
+            return False
+
+    checks = {
+        "supabase": await run_in_threadpool(_db_ok),
+        "rag_server": (await rag_server_client.health()) if rag_server_client._url() else None,
+        "embedder_loaded": _warm["embedder"],
+        "uptime_s": round(time.time() - _warm["started_at"]),
+    }
+    ok = checks["supabase"] and checks["embedder_loaded"]
+    return JSONResponse({"ready": ok, **checks}, status_code=200 if ok else 503)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -596,8 +667,7 @@ def leaderboard(user=Depends(get_current_user)):
     """F10: top-10 students by XP within the requester's institute."""
     sb = get_supabase()
     sid = _resolve_student_id(user)
-    me = (sb.table("students").select("institute_id").eq("id", sid).limit(1).execute().data) or []
-    inst = _as_uuid(me[0].get("institute_id")) if me else None
+    inst = _as_uuid((_student_row(user["id"]) or {}).get("institute_id"))
     q = sb.table("students").select("id, name, email, xp_points, streak_days")
     q = q.eq("institute_id", inst) if inst else q.is_("institute_id", "null")
     rows = q.order("xp_points", desc=True).limit(10).execute().data or []
@@ -739,11 +809,17 @@ def submit_challenge(req: SubmitChallengeRequest, background: BackgroundTasks,
 
 # ── Teacher / admin ───────────────────────────────────────────────────────────
 @app.get("/teacher/alerts")
-def teacher_alerts(institute_id: str, user=Depends(require_role("teacher", "admin"))):
+def teacher_alerts(institute_id: str, limit: int = 200, offset: int = 0,
+                   user=Depends(require_role("teacher", "admin"))):
+    inst = _as_uuid(institute_id)
+    if not inst:  # "" used to reach Postgres as an invalid UUID -> 500
+        raise HTTPException(status_code=400, detail="institute_id must be a valid institute id.")
     sb = get_supabase()
+    limit, offset = max(1, min(limit, 500)), max(0, offset)
     alerts = (sb.table("alerts").select("*")
-              .eq("institute_id", institute_id).eq("is_read", False)
-              .order("risk_score", desc=True).execute()).data
+              .eq("institute_id", inst).eq("is_read", False)
+              .order("risk_score", desc=True)
+              .range(offset, offset + limit - 1).execute()).data
     return {"alerts": alerts}
 
 
@@ -776,10 +852,13 @@ def teacher_overview(institute_id: str = "", user=Depends(require_role("teacher"
             key=lambda x: x["avg_score"],
         )
 
-    alerts_q = sb.table("alerts").select("*").eq("is_read", False)
+    # content_gap alerts are shown by /teacher/rag-insights, and the dashboard drops
+    # them from this list, so they aren't sent here. Capped: the newest-risk 200.
+    alerts_q = (sb.table("alerts").select("*").eq("is_read", False)
+                .or_("alert_type.is.null,alert_type.neq.content_gap"))
     if inst:
         alerts_q = alerts_q.eq("institute_id", inst)
-    alerts = (alerts_q.order("risk_score", desc=True).execute().data or [])
+    alerts = (alerts_q.order("risk_score", desc=True).limit(200).execute().data or [])
 
     # Top doubts this week (simple frequency over recent questions)
     top_doubts = []
@@ -811,7 +890,8 @@ def teacher_pending_tests(institute_id: str = "", user=Depends(require_role("tea
 
 
 @app.get("/teacher/submissions")
-def teacher_submissions(institute_id: str = "", user=Depends(require_role("teacher", "admin"))):
+def teacher_submissions(institute_id: str = "", limit: int = 100, offset: int = 0,
+                        user=Depends(require_role("teacher", "admin"))):
     """Tests students have submitted (status 'evaluated'), with scores — newest first.
 
     Filters by institute when a valid institute_id is given; otherwise returns all
@@ -824,7 +904,8 @@ def teacher_submissions(institute_id: str = "", user=Depends(require_role("teach
     inst = _as_uuid(institute_id)
     if inst:
         q = q.eq("institute_id", inst)
-    tests = q.limit(100).execute().data or []
+    limit, offset = max(1, min(limit, 500)), max(0, offset)
+    tests = q.range(offset, offset + limit - 1).execute().data or []
 
     # Attach the student's name/email to each submission.
     ids = list({t["student_id"] for t in tests if t.get("student_id")})
@@ -1100,7 +1181,8 @@ def parent_report(user=Depends(require_role("parent"))):
 
     # Match case-insensitively against the normalised (lowercased) parent_email.
     parent_email = (user.get("email") or "").strip().lower()
-    students = (sb.table("students").select("*")
+    students = (sb.table("students")
+                .select("id, name, predicted_rank, target_college, target_rank")
                 .eq("parent_email", parent_email)
                 .order("created_at").execute().data) or []
     if not students:
@@ -1181,14 +1263,15 @@ def parent_activity_heatmap(days: int = 14, user=Depends(require_role("parent"))
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 @app.get("/admin/audit-logs")
-def admin_audit_logs(action: str = "", q: str = "", limit: int = 200,
+def admin_audit_logs(action: str = "", q: str = "", limit: int = 200, offset: int = 0,
                      user=Depends(require_role("admin"))):
     """F18: filterable audit trail of test / badge / goal actions."""
     sb = get_supabase()
     query = sb.table("audit_logs").select("*").order("created_at", desc=True)
     if action:
         query = query.eq("action", action)
-    rows = query.limit(max(1, min(limit, 1000))).execute().data or []
+    limit, offset = max(1, min(limit, 1000)), max(0, offset)
+    rows = query.range(offset, offset + limit - 1).execute().data or []
     if q:
         ql = q.strip().lower()
         rows = [r for r in rows
@@ -1607,6 +1690,33 @@ def _activity_heatmap(emails=None, days: int = 14) -> dict:
     return {"hours": buckets, "total": sum(buckets), "days": days}
 
 
+# auth_id -> {"id", "institute_id"} of the caller's students row. Both
+# _resolve_student_id and _caller_institute_id run on most requests; this saves
+# their round trips. Only rows that exist are cached, for STUDENT_CACHE_TTL
+# seconds, so a changed institute shows up within that window.
+STUDENT_CACHE_TTL = 300
+_student_cache: dict[str, tuple[float, dict]] = {}
+_student_cache_lock = threading.Lock()
+
+
+def _student_row(auth_id: str) -> dict | None:
+    now = time.monotonic()
+    with _student_cache_lock:
+        hit = _student_cache.get(auth_id)
+        if hit and hit[0] > now:
+            return hit[1]
+    rows = (get_supabase().table("students").select("id, institute_id")
+            .eq("auth_id", auth_id).limit(1).execute()).data
+    if not rows:
+        return None
+    row = {"id": rows[0]["id"], "institute_id": rows[0].get("institute_id")}
+    with _student_cache_lock:
+        if len(_student_cache) > 10000:
+            _student_cache.clear()
+        _student_cache[auth_id] = (now + STUDENT_CACHE_TTL, row)
+    return row
+
+
 def _caller_institute_id(user: dict) -> str | None:
     """The caller's institute, resolved server-side — never from the request body.
 
@@ -1615,10 +1725,9 @@ def _caller_institute_id(user: dict) -> str | None:
     institute (callers then use the env-default RAG tenant).
     """
     try:
-        row = (get_supabase().table("students").select("institute_id")
-               .eq("auth_id", user["id"]).limit(1).execute()).data
+        row = _student_row(user["id"])
         if row:
-            return _as_uuid(row[0].get("institute_id"))
+            return _as_uuid(row.get("institute_id"))
     except Exception as e:
         print(f"[main] institute lookup failed for {user.get('id')}: {e}")
     return _as_uuid(user.get("institute_id"))
@@ -1633,10 +1742,9 @@ def _resolve_student_id(user: dict) -> str:
     succeeds and prevents a "no student profile" 404 on a freshly signed-up user.
     """
     sb = get_supabase()
-    res = (sb.table("students").select("id").eq("auth_id", user["id"])
-           .limit(1).execute()).data
-    if res:
-        return res[0]["id"]
+    row = _student_row(user["id"])
+    if row:
+        return row["id"]
 
     # Only students get an auto-created profile; other roles genuinely have none.
     if (user.get("role") or "student") != "student":

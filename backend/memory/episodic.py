@@ -4,15 +4,12 @@ Used for personalized motivation during at-risk intervention ("remember when you
 finally cracked rotational dynamics?"). Plain Supabase rows, no extra service.
 """
 
-import os
-from functools import lru_cache
-
-from supabase import create_client, Client
 
 
-@lru_cache(maxsize=1)
-def _supabase() -> Client:
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+
+def _supabase():
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def record_milestone(

@@ -8,7 +8,6 @@ or null), so a "hot topic" links to the notes that cover it.
 Runs nightly; can also be triggered on demand from the teacher dashboard.
 """
 
-import os
 import uuid as _uuid
 from collections import Counter
 from datetime import datetime, timezone, timedelta
@@ -24,8 +23,8 @@ def _as_uuid(value):
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _label_for(questions: list[str]) -> str:

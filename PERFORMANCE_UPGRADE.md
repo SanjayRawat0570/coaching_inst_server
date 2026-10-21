@@ -154,3 +154,27 @@ Logged-in pages need a manual run while signed in (Chrome DevTools → Lighthous
 Not built locally (Docker Desktop stopped, little disk). `sentence-transformers` pulls
 the default PyPI torch: 2.14.1 = 555 MB Linux wheel plus 6 CUDA dependency groups
 (cuda-toolkit, cudnn, …) — the full CUDA build. MiniLM downloads on first use.
+
+## Phase 1 results (2026-10-22)
+
+Same machine and command as the baseline (`python -m scripts.bench --runs 10 --truststore`).
+
+| Endpoint | p50 before → after | p95 before → after | Supabase calls before → after |
+|---|---|---|---|
+| /flashcards/due | 1767 → 54 ms | 2445 → 66 ms | 2 (+ new client) → 1 |
+| /leaderboard | 156 → 61 ms | 176 → 615 ms (one outlier) | 3 → 1 |
+| /progress | 211 → 165 ms | 339 → 186 ms | 4 → 3 |
+| /teacher/overview | 392 → 236 ms | 484 → 254 ms | 4 → 4 (content-gap alerts no longer sent) |
+| /teacher/students | 127 → 56 ms | 289 → 92 ms | 1 → 1 |
+| /teacher/alerts | 500 error → 400 with a message for a blank institute | | |
+| /admin/analytics | 534 → 439 ms | 792 → 614 ms | 8 → 8 (Phase 2) |
+| /parent/report | 542 → 370 ms | 700 → 802 ms | 8 → 8 (Phase 2) |
+
+Other numbers:
+- Shared Supabase client: an agent call that used to build a client paid ~1.2 s
+  (client 0.55 s + first query on a new connection 0.7 s); now ~50 ms.
+- Embedding model: load 21.9 s + first encode 0.4 s, now done in the background at
+  boot (`/ready` turned 200 at 43.5 s after start on this machine).
+- LLM: Groq's `llama-3.3-70b-versatile` returns 404 model_not_found today. Before,
+  that error reached the user; now the call fails over to Gemini (answered in 5.3 s)
+  and Groq is skipped for 60 s.

@@ -87,6 +87,14 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
    SESSION_TIMEOUT_MINUTES=30
    WORKING_MEMORY_TURNS=10
    INACTIVE_ALERT_DAYS=3
+
+   # Optional (defaults shown)
+   LLM_TIMEOUT=20          # seconds per LLM provider before failing over to the next
+   GROQ_MODEL=llama-3.3-70b-versatile
+   GEMINI_MODEL=gemini-2.5-flash
+   OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+   WARM_START=1            # load the embedding model in the background at boot
+   SCHEDULER_ENABLED=1     # 0 = don't run the scheduled jobs in this instance
    ```
    > Do **not** set `PORT` — Railway provides it.
    >
@@ -127,6 +135,9 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
 - **Model cache:** the model downloads into `/tmp` at runtime (env vars set in the
   Dockerfile). Expect a slow *first* request after each deploy, fast afterwards.
 - **Scheduler:** APScheduler runs in-process and starts on boot — no extra service.
+- **Health vs ready:** `/health` answers instantly (Railway's health check uses it).
+  `/ready` returns 200 once Supabase answers and the embedding model has loaded
+  (about 20–45 s after a deploy), else 503 with each check listed.
 - **Email:** notifications are email-only (Resend). Without a verified domain, Resend
   only delivers to the address you signed up with — verify a domain to email parents.
 

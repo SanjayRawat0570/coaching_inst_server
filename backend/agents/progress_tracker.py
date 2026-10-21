@@ -5,7 +5,6 @@ exponential moving average per concept so recent performance counts more, and
 records episodic milestones when a weak concept crosses into mastery.
 """
 
-import os
 
 from graph.state import CoachingState
 
@@ -14,8 +13,8 @@ MASTERY_THRESHOLD = 0.8
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _update_concept(sb, student_id, subject, concept, new_score) -> dict:

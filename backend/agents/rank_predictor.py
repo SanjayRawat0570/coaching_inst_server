@@ -8,7 +8,6 @@ prediction is persisted onto the student profile (predicted_rank / _context / _a
 so the dashboard can show it as a big number (F5).
 """
 
-import os
 import json
 from datetime import datetime, timezone
 
@@ -18,8 +17,8 @@ GENERAL_CATEGORIES = {"gen", "general", "open", "ur", "common rank list", "crl"}
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _target_exam(sb, student_id: str) -> str:

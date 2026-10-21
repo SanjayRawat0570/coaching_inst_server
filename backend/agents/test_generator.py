@@ -8,15 +8,14 @@ sit in a reviewer loop: review_feedback (if present) is fed back in to improve
 the next attempt, and the retrieved chunks are kept in state for the reviewer.
 """
 
-import os
 import json
 
 from graph.state import CoachingState
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _weak_concepts(student_id: str, subject: str = None, limit: int = 6) -> list[dict]:

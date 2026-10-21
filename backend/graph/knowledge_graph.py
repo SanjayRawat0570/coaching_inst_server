@@ -12,19 +12,13 @@ about *why* a student is weak (missing prerequisite) not just *that* they are.
 Everything fails soft so an agent never crashes if the graph is unavailable.
 """
 
-import os
-from functools import lru_cache
 
 from rag.embedder import embed
 
 
-@lru_cache(maxsize=1)
 def _supabase():
-    from supabase import create_client
-    return create_client(
-        os.getenv("SUPABASE_URL"),
-        os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"),
-    )
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _vec_literal(vector: list[float]) -> str:

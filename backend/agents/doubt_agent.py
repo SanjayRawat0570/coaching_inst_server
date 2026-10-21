@@ -18,7 +18,6 @@ so it is handled exactly like a text doubt.
 """
 
 import asyncio
-import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing
 from datetime import datetime, timezone
@@ -34,8 +33,8 @@ _LEVEL_SCORE = {"high": 0.9, "medium": 0.6, "low": 0.3}
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _llm():

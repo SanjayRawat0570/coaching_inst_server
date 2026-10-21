@@ -8,7 +8,6 @@
   Every 5 min   -> flashcard reminder checker
 """
 
-import os
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -42,11 +41,11 @@ def _nightly_inactivity_alerts():
 
 def _flashcard_reminders():
     """Notify students who have flashcards due now."""
-    from supabase import create_client
+    from auth.supabase_auth import get_supabase
     from agents.flashcard_agent import due_cards
     from notifications import notify
 
-    sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    sb = get_supabase()
     students = sb.table("students").select("id, name, email").execute().data or []
     for s in students:
         cards = due_cards(s["id"])

@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncIterator
 
@@ -57,6 +58,54 @@ def _tenant(tenant: str | None) -> str:
 
 def _timeout() -> float:
     return float(os.getenv("RAG_SERVER_TIMEOUT", "30"))
+
+
+# ── Shared HTTP clients (keep-alive) ───────────────────────────────────────────
+# One sync client per process and one async client per event loop, created on
+# first use, so repeated calls reuse open connections instead of paying a new
+# TLS handshake each time. Timeouts are passed per request. aclose() runs in the
+# FastAPI lifespan shutdown.
+
+_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+_sync_client: httpx.Client | None = None
+_async_client: tuple[asyncio.AbstractEventLoop, httpx.AsyncClient] | None = None
+_client_lock = threading.Lock()
+
+
+def _client() -> httpx.Client:
+    global _sync_client
+    with _client_lock:
+        if _sync_client is None or _sync_client.is_closed:
+            _sync_client = httpx.Client(limits=_LIMITS)
+        return _sync_client
+
+
+def _aclient() -> httpx.AsyncClient:
+    """The async client of the running event loop (one client can't span loops)."""
+    global _async_client
+    loop = asyncio.get_running_loop()
+    if _async_client is None or _async_client[0] is not loop or _async_client[1].is_closed:
+        _async_client = (loop, httpx.AsyncClient(limits=_LIMITS))
+    return _async_client[1]
+
+
+async def aclose() -> None:
+    """Close the shared clients (FastAPI lifespan shutdown)."""
+    global _sync_client, _async_client
+    if _async_client is not None:
+        try:
+            await _async_client[1].aclose()
+        except Exception:  # noqa: BLE001 - belongs to an already closed loop
+            pass
+    if _sync_client is not None:
+        _sync_client.close()
+    _sync_client = _async_client = None
+
+
+def reset_clients() -> None:
+    """Forget the shared clients without closing them (tests swap httpx out)."""
+    global _sync_client, _async_client
+    _sync_client = _async_client = None
 
 
 def is_enabled(api_key: str | None = None) -> bool:
@@ -114,11 +163,10 @@ async def search(query: str, *, top_k: int = 5, tenant: str | None = None,
     if not is_enabled(api_key) or not query.strip():
         return []
     try:
-        async with httpx.AsyncClient(timeout=_timeout()) as client:
-            r = await client.post(f"{_url()}/api/v1/search/hybrid",
+        r = await _aclient().post(f"{_url()}/api/v1/search/hybrid", timeout=_timeout(),
                                   json=_search_body(query, top_k, tenant), headers=_headers(api_key))
-            r.raise_for_status()
-            return [_to_chunk(h) for h in r.json().get("hits", []) if h.get("metadata")]
+        r.raise_for_status()
+        return [_to_chunk(h) for h in r.json().get("hits", []) if h.get("metadata")]
     except Exception as exc:  # noqa: BLE001 - fail soft
         log.warning("RAG_SERVER search failed (%s)", exc)
         return []
@@ -130,11 +178,10 @@ def search_sync(query: str, *, top_k: int = 5, tenant: str | None = None,
     if not is_enabled(api_key) or not query.strip():
         return []
     try:
-        with httpx.Client(timeout=_timeout()) as client:
-            r = client.post(f"{_url()}/api/v1/search/hybrid",
-                            json=_search_body(query, top_k, tenant), headers=_headers(api_key))
-            r.raise_for_status()
-            return [_to_chunk(h) for h in r.json().get("hits", []) if h.get("metadata")]
+        r = _client().post(f"{_url()}/api/v1/search/hybrid", timeout=_timeout(),
+                           json=_search_body(query, top_k, tenant), headers=_headers(api_key))
+        r.raise_for_status()
+        return [_to_chunk(h) for h in r.json().get("hits", []) if h.get("metadata")]
     except Exception as exc:  # noqa: BLE001
         log.warning("RAG_SERVER search failed (%s)", exc)
         return []
@@ -188,16 +235,16 @@ async def ask_stream(question: str, *, tenant: str | None = None,
     if conversation_id:
         body["conversation_id"] = conversation_id
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(_timeout(), read=120)) as client:
-            async with client.stream("POST", f"{_url()}/api/v1/rag/stream/ask",
+        async with _aclient().stream("POST", f"{_url()}/api/v1/rag/stream/ask",
+                                     timeout=httpx.Timeout(_timeout(), read=120),
                                      json=body, headers=_headers(api_key)) as r:
-                r.raise_for_status()
-                async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        try:
-                            yield json.loads(line[5:].strip())
-                        except json.JSONDecodeError:
-                            continue
+            r.raise_for_status()
+            async for line in r.aiter_lines():
+                if line.startswith("data:"):
+                    try:
+                        yield json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
     except Exception as exc:  # noqa: BLE001
         log.warning("RAG_SERVER ask failed (%s)", exc)
         yield {"event": "error", "detail": str(exc)}
@@ -227,31 +274,30 @@ async def upload_document(content: bytes, filename: str, *, tenant: str | None =
     if not is_enabled(api_key):
         return {"status": "failed", "message": "RAG_SERVER is not configured"}
     try:
-        async with httpx.AsyncClient(timeout=_timeout()) as client:
-            r = await client.post(f"{_url()}/api/v1/documents/upload",
-                                  files={"file": (filename, content)},
-                                  data={"tenant": _tenant(tenant)}, headers=_headers(api_key))
-            if r.status_code >= 400:
-                try:
-                    detail = r.json().get("detail", r.text)
-                except ValueError:
-                    detail = r.text
-                return {"status": "failed", "message": str(detail)}
-            exec_id = r.json()["execution_id"]
-            if not wait:
-                return {"execution_id": exec_id, "status": "running"}
-            return await _wait_for(client, exec_id, poll_seconds, max_wait, api_key)
+        client = _aclient()
+        r = await client.post(f"{_url()}/api/v1/documents/upload", timeout=_timeout(),
+                              files={"file": (filename, content)},
+                              data={"tenant": _tenant(tenant)}, headers=_headers(api_key))
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("detail", r.text)
+            except ValueError:
+                detail = r.text
+            return {"status": "failed", "message": str(detail)}
+        exec_id = r.json()["execution_id"]
+        if not wait:
+            return {"execution_id": exec_id, "status": "running"}
+        return await _wait_for(client, exec_id, poll_seconds, max_wait, api_key)
     except Exception as exc:  # noqa: BLE001
         log.warning("RAG_SERVER upload failed (%s)", exc)
         return {"status": "failed", "message": f"RAG server unreachable: {exc}"}
 
 
 async def upload_status(execution_id: str, *, api_key: str | None = None) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=_timeout()) as client:
-        r = await client.get(f"{_url()}/api/v1/documents/executions/{execution_id}",
-                             headers=_headers(api_key))
-        r.raise_for_status()
-        return r.json()
+    r = await _aclient().get(f"{_url()}/api/v1/documents/executions/{execution_id}",
+                             timeout=_timeout(), headers=_headers(api_key))
+    r.raise_for_status()
+    return r.json()
 
 
 async def _wait_for(client: httpx.AsyncClient, exec_id: str, poll_seconds: float,
@@ -259,7 +305,7 @@ async def _wait_for(client: httpx.AsyncClient, exec_id: str, poll_seconds: float
     waited = 0.0
     while waited < max_wait:
         r = await client.get(f"{_url()}/api/v1/documents/executions/{exec_id}",
-                             headers=_headers(api_key))
+                             timeout=_timeout(), headers=_headers(api_key))
         r.raise_for_status()
         state = r.json()
         if state.get("status") in ("completed", "failed"):
@@ -282,9 +328,9 @@ async def send_feedback(query_id: str, rating: int, *, query: str = "", answer: 
     body = {"query_id": query_id, "rating": max(1, min(5, int(rating))), "comment": comment,
             "query": query, "answer": answer, "sources": sources or []}
     try:
-        async with httpx.AsyncClient(timeout=_timeout()) as client:
-            r = await client.post(f"{_url()}/api/v1/feedback", json=body, headers=_headers(api_key))
-            return r.status_code < 400
+        r = await _aclient().post(f"{_url()}/api/v1/feedback", timeout=_timeout(),
+                                  json=body, headers=_headers(api_key))
+        return r.status_code < 400
     except Exception as exc:  # noqa: BLE001
         log.warning("RAG_SERVER feedback failed (%s)", exc)
         return False
@@ -296,10 +342,9 @@ async def tenant_usage(*, tenant: str | None = None,
     if not is_enabled(api_key):
         return None
     try:
-        async with httpx.AsyncClient(timeout=_timeout()) as client:
-            r = await client.get(f"{_url()}/api/v1/tenants/{_tenant(tenant)}/usage",
-                                 headers=_headers(api_key))
-            return r.json() if r.status_code < 400 else None
+        r = await _aclient().get(f"{_url()}/api/v1/tenants/{_tenant(tenant)}/usage",
+                                 timeout=_timeout(), headers=_headers(api_key))
+        return r.json() if r.status_code < 400 else None
     except Exception as exc:  # noqa: BLE001
         log.warning("RAG_SERVER usage failed (%s)", exc)
         return None
@@ -309,7 +354,6 @@ async def health() -> bool:
     if not _url():
         return False
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            return (await client.get(f"{_url()}/health")).status_code == 200
+        return (await _aclient().get(f"{_url()}/health", timeout=5)).status_code == 200
     except Exception:  # noqa: BLE001
         return False

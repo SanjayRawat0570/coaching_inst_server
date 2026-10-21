@@ -14,8 +14,8 @@ AT_RISK_THRESHOLD = float(os.getenv("AT_RISK_THRESHOLD", "70"))
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def _engagement_score(sb, student) -> tuple[float, dict]:

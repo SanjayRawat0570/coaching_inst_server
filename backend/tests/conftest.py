@@ -19,6 +19,20 @@ def rag_env(monkeypatch):
     monkeypatch.setenv("RAG_SERVER_TIMEOUT", "5")
 
 
+@pytest.fixture(autouse=True)
+def fresh_process_state():
+    """Shared clients / caches are per process; give every test a clean slate so
+    one test's fakes never leak into the next."""
+    from rag import rag_server_client
+    from graph import llm
+    rag_server_client.reset_clients()
+    llm.reset_circuits()
+    if "main" in sys.modules:
+        sys.modules["main"]._student_cache.clear()
+    yield
+    rag_server_client.reset_clients()
+
+
 @pytest.fixture
 def mock_http(monkeypatch):
     """Route every httpx client through a MockTransport.
@@ -87,8 +101,17 @@ class _FakeQuery:
     def is_(self, key, value):
         return self._filter("is", key, value)
 
+    def neq(self, key, value):
+        return self._filter("neq", key, value)
+
+    def or_(self, expr):
+        return self._filter("or", None, expr)
+
     def limit(self, *_):
         return self
+
+    def range(self, start, end):
+        return self._filter("range", None, (start, end))
 
     def execute(self):
         self.db.calls.append(SimpleNamespace(table=self.table, op=self.op,

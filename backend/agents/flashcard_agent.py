@@ -9,15 +9,14 @@ nothing retrieved is skipped. If RAG_SERVER isn't configured at all, cards fall
 back to the LLM's own knowledge with source null.
 """
 
-import os
 from datetime import date, timedelta
 
 from graph.state import CoachingState
 
 
 def _supabase():
-    from supabase import create_client
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"))
+    from auth.supabase_auth import get_supabase
+    return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
 def sm2(ease_factor: float, interval_days: int, repetitions: int, quality: int):
