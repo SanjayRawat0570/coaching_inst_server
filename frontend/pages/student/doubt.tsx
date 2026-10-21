@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
 import Shell from "../../components/Shell";
 import Icon from "../../components/Icon";
-import { streamDoubt } from "../../lib/api";
+import { api, streamDoubt } from "../../lib/api";
 import { supabase } from "../../lib/supabase";
 
 export default function DoubtPage() {
-  const [messages, setMessages] = useState([]); // {role, content}
+  const [messages, setMessages] = useState([]); // {role, content, meta?, rating?}
+  const [conversationId, setConversationId] = useState(null); // RAG_SERVER chat memory
   const [input, setInput] = useState("");
   const [subject, setSubject] = useState("");
   const [socratic, setSocratic] = useState(false);
@@ -16,7 +17,7 @@ export default function DoubtPage() {
 
   // ── Hindi voice input via the browser Web Speech API (free, Chrome) ──────────
   function startVoice() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
       alert("Voice input needs Chrome.");
       return;
@@ -40,6 +41,7 @@ export default function DoubtPage() {
     if (!question && !image) return;
 
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    const isFirstMessage = messages.length === 0;
     const userMsg = { role: "user", content: question || "[image question]" };
     setMessages((m) => [...m, userMsg, { role: "assistant", content: "" }]);
     setInput("");
@@ -60,14 +62,24 @@ export default function DoubtPage() {
         socratic,
         image_b64: image,
         conversation_history: history,
+        conversation_id: conversationId,
+        new_conversation: isFirstMessage,
       },
       {
         onStatus: (s) => setStatus(s),
+        onMeta: (meta) => {
+          if (meta?.conversation_id) setConversationId(meta.conversation_id);
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { ...copy[copy.length - 1], meta };
+            return copy;
+          });
+        },
         onToken: (t) =>
           setMessages((m) => {
             const copy = [...m];
             copy[copy.length - 1] = {
-              role: "assistant",
+              ...copy[copy.length - 1],
               content: copy[copy.length - 1].content + t,
             };
             return copy;
@@ -86,6 +98,27 @@ export default function DoubtPage() {
         },
       }
     );
+  }
+
+  function newChat() {
+    setMessages([]);
+    setConversationId(null);
+    setStatus("");
+  }
+
+  // 👍 / 👎 — once per answer. Optimistic; rolled back if the request fails.
+  async function rate(index, helpful) {
+    const msg = messages[index];
+    if (!msg?.meta?.doubt_id || msg.rating) return;
+    const setRating = (rating) =>
+      setMessages((m) => m.map((x, i) => (i === index ? { ...x, rating } : x)));
+    setRating(helpful ? "up" : "down");
+    try {
+      await api("/doubt/feedback", { method: "POST", body: { doubt_id: msg.meta.doubt_id, helpful } });
+    } catch (e) {
+      // 409 = already rated earlier: keep the choice shown.
+      if (!String(e.message).includes("already rated")) setRating(null);
+    }
   }
 
   return (
@@ -108,6 +141,14 @@ export default function DoubtPage() {
           />
           Socratic mode (guide me, don&apos;t just answer)
         </label>
+        <button
+          onClick={newChat}
+          disabled={streaming || messages.length === 0}
+          className="btn-ghost ml-auto text-sm disabled:opacity-50"
+          title="Start a fresh conversation"
+        >
+          New chat
+        </button>
       </div>
 
       <div className="card h-[55vh] overflow-y-auto p-4 space-y-4">
@@ -123,9 +164,11 @@ export default function DoubtPage() {
         {messages.map((m, i) => {
           const isUser = m.role === "user";
           const isLast = i === messages.length - 1;
-          const { body, confidence } = isUser
-            ? { body: m.content, confidence: null }
-            : splitConfidence(m.content);
+          const split = isUser ? { body: m.content, confidence: null } : splitConfidence(m.content);
+          const body = split.body;
+          // RAG_SERVER's confidence ([META]) wins over a "CONFIDENCE: XX%" line in the text.
+          const confidence = m.meta ? m.meta.confidence ?? null : split.confidence;
+          const gap = !!m.meta && (m.meta.answerable === false || m.meta.confidence === "low");
           return (
             <div key={i} className={"flex items-end gap-2 " + (isUser ? "flex-row-reverse" : "")}>
               <span
@@ -153,7 +196,43 @@ export default function DoubtPage() {
                     </span>
                   ) : "")}
                 </div>
-                {!isUser && confidence != null && <ConfidenceBadge value={confidence} />}
+                {!isUser && m.meta && <SourceChips citations={m.meta.citations} />}
+                {!isUser && gap && (
+                  <p className="text-xs rounded-lg px-2.5 py-1.5 bg-amber-500/10 text-amber-700 border border-amber-500/20 dark:text-amber-300 dark:border-amber-400/25">
+                    Not clearly covered in your institute&apos;s notes — your teacher has been informed.
+                  </p>
+                )}
+                {!isUser && (confidence != null || m.meta?.doubt_id) && (
+                  <div className="flex items-center gap-2">
+                    {confidence != null && <ConfidenceBadge value={confidence} />}
+                    {m.meta?.doubt_id && (
+                      <span className="inline-flex items-center gap-1">
+                        {[
+                          { helpful: true, key: "up", label: "👍", title: "Helpful" },
+                          { helpful: false, key: "down", label: "👎", title: "Not helpful" },
+                        ].map((b) => (
+                          <button
+                            key={b.key}
+                            onClick={() => rate(i, b.helpful)}
+                            disabled={!!m.rating}
+                            title={b.title}
+                            aria-label={b.title}
+                            className={
+                              "text-sm px-1.5 py-0.5 rounded-md transition " +
+                              (m.rating === b.key
+                                ? "bg-brand/15 ring-1 ring-brand/30"
+                                : m.rating
+                                ? "opacity-30"
+                                : "hover:bg-slate-200 dark:hover:bg-ink-700")
+                            }
+                          >
+                            {b.label}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -212,14 +291,41 @@ function splitConfidence(text) {
   };
 }
 
+// value: a 0–100 number (old "CONFIDENCE: XX%" answers) or RAG_SERVER's "high" | "medium" | "low".
 function ConfidenceBadge({ value }) {
+  const level =
+    typeof value === "number" ? (value >= 80 ? "high" : value >= 50 ? "medium" : "low") : String(value).toLowerCase();
   const tone =
-    value >= 80 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-    : value >= 50 ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
+    level === "high" ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+    : level === "medium" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
     : "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30";
+  const label = typeof value === "number" ? `${value}% confident` : `${level.charAt(0).toUpperCase()}${level.slice(1)} confidence`;
   return (
     <span className={"inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border " + tone}>
-      <Icon name="check" size={12} /> {value}% confident
+      <Icon name="check" size={12} /> {label}
     </span>
+  );
+}
+
+// "Physics_Notes.pdf · p. 12" chips, one per distinct source + page.
+function SourceChips({ citations }) {
+  const seen = new Set();
+  const chips = (citations || []).filter((c) => {
+    if (!c?.source) return false;
+    const key = `${c.source}|${c.page ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!chips.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {chips.map((c) => (
+        <span key={`${c.source}|${c.page ?? ""}`} className="badge-brand" title={c.source}>
+          {c.source}
+          {c.page != null && c.page !== "" ? ` · p. ${c.page}` : ""}
+        </span>
+      ))}
+    </div>
   );
 }

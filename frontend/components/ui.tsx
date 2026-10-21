@@ -1,6 +1,6 @@
 // Small shared presentational helpers used across role dashboards.
 
-export function EmptyState({ icon, title, hint, action }) {
+export function EmptyState({ icon, title, hint, action }: any) {
   return (
     <div className="empty-state">
       {icon && <span className="icon">{icon}</span>}
@@ -12,11 +12,11 @@ export function EmptyState({ icon, title, hint, action }) {
 }
 
 // A few stacked shimmer bars; `lines` controls how many.
-export function Skeleton({ className = "" }) {
+export function Skeleton({ className = "" }: any) {
   return <div className={`skeleton ${className}`} />;
 }
 
-export function SkeletonCard({ lines = 3 }) {
+export function SkeletonCard({ lines = 3 }: any) {
   return (
     <div className="card p-5 space-y-3">
       <Skeleton className="h-4 w-1/3" />
@@ -28,7 +28,7 @@ export function SkeletonCard({ lines = 3 }) {
 }
 
 // Coloured percentage pill for a test result (green ≥60, amber ≥35, else red).
-export function ScorePill({ percent }) {
+export function ScorePill({ percent }: any) {
   if (percent == null) return <span className="muted">—</span>;
   const tone =
     percent >= 60
@@ -41,8 +41,8 @@ export function ScorePill({ percent }) {
 
 // A compact table of recent evaluated tests, shared across dashboards.
 // Pass showStudent to include a student-name column (admin view).
-export function ResultsTable({ rows = [], showStudent = false }) {
-  const fmt = (v) => (v ? new Date(v).toLocaleDateString() : "—");
+export function ResultsTable({ rows = [], showStudent = false }: any) {
+  const fmt = (v: any) => (v ? new Date(v).toLocaleDateString() : "—");
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -75,7 +75,7 @@ export function ResultsTable({ rows = [], showStudent = false }) {
 }
 
 // Stat tile: icon node in a tile, big value, label, optional sub line.
-export function Stat({ icon, label, value, accent = "grad-text", sub }) {
+export function Stat({ icon, label, value, accent = "grad-text", sub }: any) {
   return (
     <div className="card card-hover p-5">
       <div className="flex items-start justify-between gap-3">

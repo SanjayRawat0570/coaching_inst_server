@@ -27,6 +27,7 @@ export default function TeacherDashboard() {
   const [monthly, setMonthly] = useState([]);
   const [monthlyStudent, setMonthlyStudent] = useState(""); // "" = whole class
   const [instId, setInstId] = useState("");
+  const [insights, setInsights] = useState({ content_gaps: [], answer_quality: null });
   const [loading, setLoading] = useState(true);
 
   // F15: (re)load the monthly line for the class or a chosen student.
@@ -49,14 +50,17 @@ export default function TeacherDashboard() {
       const institute_id = user?.user_metadata?.institute_id || "";
       setInstId(institute_id);
       // Independent calls — one failing must not blank the rest of the dashboard.
-      const [ov, subs, studs, cl, hm, ms] = await Promise.allSettled([
+      const [ov, subs, studs, cl, hm, ms, ins] = await Promise.allSettled([
         api(`/teacher/overview?institute_id=${institute_id}`),
         api(`/teacher/submissions?institute_id=${institute_id}`),
         api(`/teacher/students?institute_id=${institute_id}`),
         api(`/teacher/doubt-clusters?institute_id=${institute_id}`),
         api(`/teacher/activity-heatmap?institute_id=${institute_id}`),
         api(`/teacher/monthly-scores?institute_id=${institute_id}`),
+        api(`/teacher/rag-insights`),
       ]);
+      if (ins.status === "fulfilled") setInsights(ins.value);
+      else console.error("rag insights failed", ins.reason);
       if (ov.status === "fulfilled") setOverview(ov.value);
       else console.error("overview failed", ov.reason);
       if (subs.status === "fulfilled") setSubmissions(subs.value.submissions || []);
@@ -91,7 +95,10 @@ export default function TeacherDashboard() {
     setOverview((o) => ({ ...o, alerts: o.alerts.filter((a) => a.id !== alertId) }));
   }
 
-  const alerts = overview.alerts || [];
+  // Content gaps have their own card below; this list is for at-risk students.
+  const alerts = (overview.alerts || []).filter((a) => a.alert_type !== "content_gap");
+  const gaps = insights.content_gaps || [];
+  const quality = insights.answer_quality;
   const heatmap = overview.heatmap || [];
   const topDoubts = overview.top_doubts || [];
   const weakest = heatmap.length ? heatmap[0] : null; // sorted ascending by avg_score
@@ -134,6 +141,50 @@ export default function TeacherDashboard() {
               </p>
             </div>
           )}
+
+          <div className="grid lg:grid-cols-2 gap-6 items-start">
+            {/* Content gaps — doubts the institute's material didn't cover */}
+            <section className="card p-5">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <h2 className="h-section flex items-center gap-2">
+                  <Icon name="target" size={16} className="text-amber-500" /> Content gaps
+                  {gaps.length > 0 && <span className="badge-amber">{gaps.length}</span>}
+                </h2>
+                <Link href="/teacher/materials" className="btn-ghost text-xs px-3 py-1.5">
+                  Upload material
+                </Link>
+              </div>
+              <p className="text-xs muted mb-3">Doubts from the last 14 days that your uploaded notes didn&apos;t clearly cover.</p>
+              {gaps.length === 0 ? (
+                <EmptyState icon={<Icon name="check" size={26} className="text-emerald-500" />} title="No gaps found" hint="Every recent doubt was covered by your study material." />
+              ) : (
+                <ul className="space-y-2 text-sm">
+                  {gaps.map((g, i) => (
+                    <li key={i} className="panel p-3 flex items-start justify-between gap-3">
+                      <span className="text-slate-700 dark:text-slate-200">{g.question}</span>
+                      <span className="badge-amber shrink-0">{g.count}×</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            {/* Answer quality — student ratings + coverage of AI answers */}
+            <section className="card p-5">
+              <h2 className="h-section mb-3 flex items-center gap-2">
+                <Icon name="mastery" size={16} /> Answer quality · last 7 days
+              </h2>
+              {!quality ? (
+                <EmptyState icon={<Icon name="mastery" size={26} />} title="No data yet" hint="Once students ask doubts and rate answers, quality shows up here." />
+              ) : (
+                <div className="grid grid-cols-3 gap-3">
+                  <Stat icon={<Icon name="check" />} label="Rated helpful" value={quality.helpful_pct != null ? `${quality.helpful_pct}%` : "—"} accent="text-emerald-500 dark:text-emerald-400" />
+                  <Stat icon={<Icon name="concepts" />} label="Covered by notes" value={quality.answerable_pct != null ? `${quality.answerable_pct}%` : "—"} />
+                  <Stat icon={<Icon name="doubt" />} label="Doubts (rated)" value={`${quality.doubts} (${quality.rated})`} />
+                </div>
+              )}
+            </section>
+          </div>
 
           <div className="grid lg:grid-cols-2 gap-6 items-start">
           {/* At-risk alerts */}
@@ -257,6 +308,12 @@ export default function TeacherDashboard() {
                       <span className="badge-brand shrink-0">{c.size}×</span>
                     </div>
                     {c.subject && <p className="text-xs text-brand dark:text-violet-400 mt-0.5">{c.subject}</p>}
+                    {c.source?.source && (
+                      <Link href="/teacher/materials" className="text-xs muted hover:underline mt-0.5 block" title="Covered in your study material">
+                        Notes: {c.source.source}
+                        {c.source.page != null && c.source.page !== "" ? ` · p. ${c.source.page}` : ""}
+                      </Link>
+                    )}
                     <ul className="mt-2 space-y-1">
                       {(c.samples || []).map((s, j) => (
                         <li key={j} className="muted text-xs flex gap-1.5"><span>•</span><span className="line-clamp-2">{s}</span></li>

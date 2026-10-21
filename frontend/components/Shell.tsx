@@ -16,9 +16,13 @@ const NAV = {
   teacher: [
     { href: "/teacher/dashboard", label: "Dashboard", icon: "dashboard" },
     { href: "/teacher/review", label: "Review Tests", icon: "review" },
+    { href: "/teacher/materials", label: "Study Material", icon: "concepts" },
   ],
   parent: [{ href: "/parent/report", label: "Report", icon: "report" }],
-  admin: [{ href: "/admin/analytics", label: "Analytics", icon: "analytics" }],
+  admin: [
+    { href: "/admin/analytics", label: "Analytics", icon: "analytics" },
+    { href: "/teacher/materials", label: "Study Material", icon: "concepts" },
+  ],
 };
 
 const ROLE_BADGE = {
@@ -28,7 +32,7 @@ const ROLE_BADGE = {
   admin: "badge-brand",
 };
 
-export default function Shell({ requireRole, title, subtitle, actions, children }) {
+export default function Shell({ requireRole, title, subtitle, actions, children }: any) {
   const { user, role, loading, logout } = useAuth({ requireRole });
   const router = useRouter();
   const [open, setOpen] = useState(false); // mobile drawer
@@ -100,8 +104,6 @@ export default function Shell({ requireRole, title, subtitle, actions, children 
         <nav className="flex-1 overflow-y-auto p-3 space-y-1">
           <p className="px-3 pt-2 pb-1.5 text-[11px] font-semibold uppercase tracking-widest muted">Menu</p>
           {links.map((l) => <NavLink key={l.href} {...l} />)}
-          <p className="px-3 pt-5 pb-1.5 text-[11px] font-semibold uppercase tracking-widest muted">System</p>
-          <NavLink href="/architecture" label="Architecture" icon="architecture" />
         </nav>
 
         <div className="p-3 border-t border-slate-200/80 dark:border-white/[0.07]">

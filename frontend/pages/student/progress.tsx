@@ -20,7 +20,7 @@ function scoreColor(score) {
 }
 
 export default function ProgressPage() {
-  const [data, setData] = useState({ weakness_map: [], profile: {}, recent_tests: [] });
+  const [data, setData] = useState<any>({ weakness_map: [], profile: {}, recent_tests: [] });
   const [cards, setCards] = useState([]);
   const [revealed, setRevealed] = useState({});
   const [loading, setLoading] = useState(true);

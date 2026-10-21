@@ -228,7 +228,7 @@ export default function Login() {
 
 // Labelled form field with a leading icon. Children are the control
 // (input/select) which gets pl-10 to clear the icon.
-function Field({ label, icon, hint, children }) {
+function Field({ label, icon, hint, children }: any) {
   return (
     <label className="block">
       <span className="flex items-center justify-between mb-1.5">

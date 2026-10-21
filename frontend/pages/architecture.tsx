@@ -20,7 +20,7 @@ const C = {
 /* ── Content (reflects the current working app) ─────────────────────────────── */
 const STATS = [
   { v: "10", l: "AI agents" },
-  { v: "6", l: "RAG patterns" },
+  { v: "1", l: "RAG service" },
   { v: "4", l: "User roles" },
   { v: "₹0", l: "Monthly cost" },
 ];
@@ -33,7 +33,7 @@ const ROLES = [
 ];
 
 const AGENTS = [
-  { n: "Doubt Agent", d: "Answers text / voice / photo doubts from RAG (NCERT + notes)." },
+  { n: "Doubt Agent", d: "Answers text / voice / photo doubts from RAG_SERVER, with citations." },
   { n: "Test Generator", d: "Builds MCQ or theory questions targeting weak concepts." },
   { n: "Reviewer Agent", d: "Quality gate — loops the generator up to 3× before approval." },
   { n: "Answer Evaluator", d: "MCQ scoring + AI grading of written answers + handwriting vision." },
@@ -46,19 +46,19 @@ const AGENTS = [
 ];
 
 const RAG = [
-  { n: "1 · Agentic", d: "LLM plans 2–4 targeted sub-queries." },
-  { n: "2 · CRAG gate", d: "Scores relevance; weak results trigger a fallback." },
-  { n: "3 · HyDE", d: "Hypothetical answer → embed → search." },
-  { n: "4 · RAPTOR", d: "Picks chunk vs chapter-summary level." },
-  { n: "5 · Web fallback", d: "Search over .edu / NCERT domains when needed." },
-  { n: "6 · CrossEncoder", d: "Re-ranks results by student level." },
+  { n: "Hybrid search", d: "Dense + BM25 retrieval, fused with RRF, per institute tenant." },
+  { n: "Grounded answers", d: "Streamed answers with citations (file + page) and confidence." },
+  { n: "Content gaps", d: "Not covered by your notes → amber note + teacher alert." },
+  { n: "Semantic cache", d: "Re-worded repeats of a doubt are answered instantly." },
+  { n: "Chat memory", d: "Follow-ups in one chat keep the conversation context." },
+  { n: "Study Material", d: "Teachers upload notes, NCERT and PYQs; tests and grading use them too." },
 ];
 
 const STACK = [
   { layer: "Frontend", color: C.brand, items: ["Next.js 14", "Tailwind CSS", "Recharts", "Supabase JS"] },
   { layer: "Backend", color: C.loop, items: ["FastAPI", "LangGraph", "APScheduler", "BackgroundTasks"] },
   { layer: "LLMs (free)", color: C.ok, items: ["Groq Llama-3.3-70B", "Gemini 2.5 Flash", "OpenRouter", "Gemini Vision"] },
-  { layer: "Data & Vectors", color: C.sched, items: ["Supabase Postgres", "pgvector", "Qdrant Cloud", "MiniLM embeds"] },
+  { layer: "Data & Vectors", color: C.sched, items: ["Supabase Postgres", "pgvector", "RAG_SERVER", "MiniLM embeds"] },
 ];
 
 /* ── Workflow diagram ───────────────────────────────────────────────────────── */
@@ -77,7 +77,7 @@ const NODES = {
   atrisk:    { x: 646,  y: 424, Icon: AlertTriangle, label: "At-Risk Detector", sub: "dropout scorer",      accent: C.risk },
   parent:    { x: 646,  y: 524, Icon: Mail,          label: "Parent Reporter",  sub: "weekly summary",      accent: C.sched },
 
-  rag:       { x: 886,  y: 40,  Icon: Search,       label: "RAG Pipeline",    sub: "6 patterns · Qdrant", accent: C.loop },
+  rag:       { x: 886,  y: 40,  Icon: Search,       label: "RAG Pipeline",    sub: "RAG_SERVER · citations", accent: C.loop },
   reviewer:  { x: 886,  y: 146, Icon: RefreshCw,    label: "Reviewer Loop",   sub: "quality gate ≤3×",   accent: C.loop },
   hitl:      { x: 886,  y: 232, Icon: UserCheck,    label: "Teacher Approval", sub: "set marks · approve", accent: C.ok },
   fanout:    { x: 886,  y: 318, Icon: Share2,       label: "Post-test fan-out", sub: "progress · rank · cards", accent: C.ok },
@@ -248,7 +248,6 @@ function WorkflowDiagram() {
           {Object.entries(NODES).map(([id, n]) => (
             <foreignObject key={id} x={n.x} y={n.y} width={NODE_W} height={NODE_H}>
               <div
-                xmlns="http://www.w3.org/1999/xhtml"
                 className="h-full w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-ink-800/85 shadow-soft flex items-center gap-2.5 px-2.5 overflow-hidden"
                 style={{ borderLeft: `3px solid ${n.accent}` }}
               >
@@ -311,7 +310,7 @@ export default function Architecture() {
           </h1>
           <p className="muted mt-4 max-w-2xl text-lg">
             An agentic tutoring platform on a free stack — FastAPI + LangGraph orchestration,
-            a 6-pattern RAG pipeline over Qdrant, and specialised AI agents per task.
+            a dedicated multi-tenant RAG service for every answer, and specialised AI agents per task.
           </p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-8">
             {STATS.map((s) => (
@@ -378,7 +377,7 @@ export default function Architecture() {
           </div>
         </Section>
 
-        <Section kicker="Retrieval" title="6-pattern RAG pipeline">
+        <Section kicker="Retrieval" title="RAG_SERVER — the only retrieval">
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {RAG.map((p) => (
               <div key={p.n} className="card card-hover p-5">
@@ -388,8 +387,8 @@ export default function Architecture() {
             ))}
           </div>
           <p className="muted text-sm mt-4">
-            Cached with <span className="font-mono">@lru_cache</span> · vectors in Qdrant ·
-            embeddings via local <span className="font-mono">all-MiniLM-L6-v2</span> (384-dim, CPU).
+            One hosted RAG service, one tenant per institute · local{" "}
+            <span className="font-mono">all-MiniLM-L6-v2</span> embeddings only for memory, clustering and copy checks.
           </p>
         </Section>
 

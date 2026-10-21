@@ -12,7 +12,6 @@ const NAV = [
   { href: "#who", label: "Who it's for" },
   { href: "#how", label: "How it works" },
   { href: "#faq", label: "FAQ" },
-  { href: "/architecture", label: "Architecture" },
 ];
 
 const STATS = [
@@ -76,13 +75,13 @@ const FAQS = [
   { q: "Do students need to install anything?", a: "No. SmartCoaching runs in any browser — students just log in and start asking doubts or taking assigned tests. No app store, no setup." },
   { q: "Where do the AI answers come from?", a: "Answers are grounded in NCERT content and your institute's own uploaded notes, so they stay aligned with what you actually teach — not random internet text." },
   { q: "How does at-risk detection work?", a: "A nightly job scores each student's engagement and performance trend, flagging anyone trending toward dropping off up to seven days early, so teachers can step in." },
-  { q: "Is it really free to run?", a: "The platform is built entirely on free-tier infrastructure — Supabase, Qdrant and free LLM APIs — so there is no per-seat or hosting cost to get started." },
+  { q: "Is it really free to run?", a: "The platform is built entirely on free-tier infrastructure — Supabase, a self-hosted RAG service and free LLM APIs — so there is no per-seat or hosting cost to get started." },
   { q: "Can parents see their child's progress?", a: "Yes. Every parent gets a plain-language weekly report by email and WhatsApp with scores, doubts asked and focus areas — generated automatically." },
 ];
 
 const FOOTER_COLS = [
   { title: "Product", links: [{ label: "Features", href: "#features" }, { label: "Who it's for", href: "#who" }, { label: "How it works", href: "#how" }, { label: "FAQ", href: "#faq" }] },
-  { title: "Platform", links: [{ label: "Architecture", href: "/architecture" }, { label: "Log in", href: "/login" }, { label: "Get started", href: "/login?mode=signup" }] },
+  { title: "Platform", links: [{ label: "Log in", href: "/login" }, { label: "Get started", href: "/login?mode=signup" }] },
   { title: "Roles", links: [{ label: "Students", href: "#who" }, { label: "Teachers", href: "#who" }, { label: "Parents", href: "#who" }] },
 ];
 

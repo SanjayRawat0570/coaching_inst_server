@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import {
   LineChart,
   Line,
@@ -22,6 +21,7 @@ export default function AdminAnalytics() {
   const [actions, setActions] = useState([]);
   const [auditAction, setAuditAction] = useState("");
   const [auditQ, setAuditQ] = useState("");
+  const [rag, setRag] = useState(null); // {connected, tenant, usage} from /admin/rag/usage
 
   async function loadAudit() {
     try {
@@ -41,6 +41,9 @@ export default function AdminAnalytics() {
         data: { user },
       } = await supabase.auth.getUser();
       const institute_id = user?.user_metadata?.institute_id || "";
+      api("/admin/rag/usage")
+        .then(setRag)
+        .catch(() => setRag({ connected: false }));
       try {
         setData(await api(`/admin/analytics?institute_id=${institute_id}`));
       } catch (e) {
@@ -72,6 +75,35 @@ export default function AdminAnalytics() {
               accent="text-emerald-500 dark:text-emerald-400"
               icon={<Icon name="mastery" />}
             />
+          </div>
+
+          {/* AI usage — RAG_SERVER queries, tokens, cost and cache hits for this institute */}
+          <div className="card p-5">
+            <h2 className="font-semibold mb-3 flex items-center gap-2">
+              <Icon name="bot" size={16} /> AI usage
+              {rag?.tenant && <span className="badge-brand">{rag.tenant}</span>}
+            </h2>
+            {!rag ? (
+              <p className="muted text-sm">Loading…</p>
+            ) : !rag.connected ? (
+              <p className="muted text-sm">RAG server not connected. Set RAG_SERVER_URL and the API key on the backend.</p>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Stat label="Queries" value={fmtNum(rag.usage.total_queries)} icon={<Icon name="doubts" />} />
+                <Stat label="Tokens" value={fmtNum(rag.usage.total_tokens)} icon={<Icon name="analytics" />} />
+                <Stat
+                  label="Estimated cost"
+                  value={rag.usage.total_cost_usd != null ? `$${Number(rag.usage.total_cost_usd).toFixed(2)}` : "—"}
+                  icon={<Icon name="target" />}
+                />
+                <Stat
+                  label="Cache hit rate"
+                  value={fmtRate(rag.usage.cache_hit_rate)}
+                  accent="text-emerald-500 dark:text-emerald-400"
+                  icon={<Icon name="check" />}
+                />
+              </div>
+            )}
           </div>
 
           <div className="card p-5">
@@ -206,26 +238,24 @@ export default function AdminAnalytics() {
             )}
           </div>
 
-          {/* Platform architecture (also available as a full page at /architecture) */}
-          <Link href="/architecture" className="card card-hover p-5 flex items-center justify-between gap-4 bg-brand/[0.04] dark:bg-brand/[0.07] border-brand/20">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="icon-tile h-11 w-11 shrink-0"><Icon name="architecture" size={20} /></span>
-              <div className="min-w-0">
-                <h2 className="font-semibold">Platform architecture</h2>
-                <p className="muted text-sm mt-0.5">
-                  8 AI agents · 6-pattern RAG · LangGraph orchestration · 100% free stack
-                </p>
-              </div>
-            </div>
-            <span className="btn-ghost text-sm whitespace-nowrap shrink-0">View map <Icon name="arrowRight" size={15} /></span>
-          </Link>
         </div>
       )}
     </Shell>
   );
 }
 
-function Stat({ label, value, accent = "", icon }) {
+function fmtNum(v) {
+  return v == null ? "—" : Number(v).toLocaleString();
+}
+
+// RAG_SERVER's cache_hit_rate may be a 0–1 fraction or a 0–100 percentage.
+function fmtRate(v) {
+  if (v == null) return "—";
+  const n = Number(v);
+  return `${Math.round(n <= 1 ? n * 100 : n)}%`;
+}
+
+function Stat({ label, value, accent = "", icon }: any) {
   return (
     <div className="card card-hover p-5">
       <div className="flex items-start justify-between gap-3">
@@ -276,11 +306,11 @@ function AccountList({ title, rows, iconName }) {
 function fmtDate(v) {
   if (!v) return "—";
   const d = new Date(v);
-  return isNaN(d) ? "—" : d.toLocaleDateString();
+  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
 }
 
 function fmtDateTime(v) {
   if (!v) return "—";
   const d = new Date(v);
-  return isNaN(d) ? "—" : d.toLocaleString();
+  return isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }

@@ -5,8 +5,11 @@ import { supabase } from "./supabase";
 /**
  * Auth hook + optional route guard.
  * useAuth({ requireRole: "student" }) redirects to "/" if not logged in / wrong role.
+ * requireRole may also be a list: { requireRole: ["teacher", "admin"] }.
  */
-export function useAuth({ requireRole } = {}) {
+export function useAuth({ requireRole }: { requireRole?: string | string[] } = {}) {
+  // A stable string key, so a list literal doesn't re-run the effect every render.
+  const roleKey = Array.isArray(requireRole) ? requireRole.join(",") : requireRole || "";
   const router = useRouter();
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
@@ -23,7 +26,7 @@ export function useAuth({ requireRole } = {}) {
 
       if (!user) {
         setLoading(false);
-        if (requireRole) router.replace("/login");
+        if (roleKey) router.replace("/login");
         return;
       }
       const r = user.user_metadata?.role || null;
@@ -31,7 +34,7 @@ export function useAuth({ requireRole } = {}) {
       setRole(r);
       setLoading(false);
 
-      if (requireRole && r !== requireRole) {
+      if (roleKey && !roleKey.split(",").includes(r)) {
         router.replace("/login");
       }
     }
@@ -42,7 +45,7 @@ export function useAuth({ requireRole } = {}) {
       active = false;
       sub?.subscription?.unsubscribe();
     };
-  }, [requireRole, router]);
+  }, [roleKey, router]);
 
   const logout = async () => {
     await supabase.auth.signOut();

@@ -16,7 +16,7 @@ export default function ReviewPage() {
   const [dueDates, setDueDates] = useState({}); // F7: test.id -> due date
 
   // ── Generate-test form ──────────────────────────────────────────────────────
-  const [gen, setGen] = useState({ student_email: "", subject: "", num_questions: 10, question_type: "mcq" });
+  const [gen, setGen] = useState<any>({ student_email: "", subject: "", num_questions: 10, question_type: "mcq" });
   const [generating, setGenerating] = useState(false);
   const [genMsg, setGenMsg] = useState("");
   const [classBusy, setClassBusy] = useState(false);
@@ -288,6 +288,11 @@ export default function ReviewPage() {
                           editQuestion(test.id, questions, qi, "question", e.target.value)
                         }
                       />
+                      <p className="text-xs muted mt-1">
+                        {q.source?.source
+                          ? `Source: ${q.source.source}${q.source.page != null && q.source.page !== "" ? ` · p. ${q.source.page}` : ""}`
+                          : "Source: none (not based on uploaded material)"}
+                      </p>
                       <div className="flex items-end gap-3 mt-2">
                         <div>
                           <label className="block text-xs muted mb-1">Marks</label>
