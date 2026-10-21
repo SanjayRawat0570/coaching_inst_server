@@ -1,32 +1,18 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Shell from "../../components/Shell";
-import { EmptyState, SkeletonCard, Stat, ResultsTable } from "../../components/ui";
+import { EmptyState, SkeletonCard, Stat, ResultsTable, ErrorState } from "../../components/ui";
 import Icon from "../../components/Icon";
 import ActivityHeatmap from "../../components/ActivityHeatmap";
-import { api } from "../../lib/api";
+import { api, errorDetail } from "../../lib/api";
+import { useToast } from "../../components/Toast";
+import { useApi } from "../../lib/hooks";
 
 export default function ParentReport() {
-  const [data, setData] = useState(null);
-  const [heat, setHeat] = useState({ hours: [], total: 0, days: 14 });
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const [report, hm] = await Promise.allSettled([
-          api("/parent/report"),
-          api("/parent/activity-heatmap"),
-        ]);
-        if (report.status === "fulfilled") setData(report.value);
-        else console.error(report.reason);
-        if (hm.status === "fulfilled") setHeat(hm.value);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const reportQ = useApi("/parent/report");
+  const heatQ = useApi("/parent/activity-heatmap");
+  const data = reportQ.data || null;
+  const heat = heatQ.data || { hours: [], total: 0, days: 14 };
+  const loading = !reportQ.data && !reportQ.error;
 
   // Backend returns a `children` array; fall back to the single-child shape.
   const children = data
@@ -43,7 +29,9 @@ export default function ParentReport() {
       title="Weekly Progress Report"
       subtitle="A plain-language summary of how your child is doing"
     >
-      {loading ? (
+      {reportQ.error && !reportQ.data ? (
+        <ErrorState message="Couldn't load the report." onRetry={() => reportQ.mutate()} />
+      ) : loading ? (
         <div className="space-y-4 max-w-2xl">
           <SkeletonCard lines={1} />
           <div className="grid grid-cols-3 gap-4">
@@ -148,6 +136,7 @@ function ChildReport({ child }) {
 }
 
 function GoalCard({ child }) {
+  const toast = useToast();
   const [college, setCollege] = useState(child.target_college || "");
   const [rank, setRank] = useState(child.target_rank || "");
   const [progress, setProgress] = useState(child.goal_progress);
@@ -168,7 +157,7 @@ function GoalCard({ child }) {
       setProgress(res.goal_progress);
       setEditing(false);
     } catch (e) {
-      alert(e.message);
+      toast(errorDetail(e) || "Couldn't save the goal. Please try again.", "error");
     } finally {
       setSaving(false);
     }

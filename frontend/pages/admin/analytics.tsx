@@ -1,68 +1,48 @@
-import { useEffect, useState } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
+import { useState } from "react";
+import dynamic from "next/dynamic";
 import Shell from "../../components/Shell";
 import Icon from "../../components/Icon";
-import { ResultsTable } from "../../components/ui";
-import { api } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
+import { ResultsTable, ErrorState, Skeleton, SkeletonCard } from "../../components/ui";
+import { useApi } from "../../lib/hooks";
+import { useAuth } from "../../lib/useAuth";
+
+const TrendChart = dynamic(() => import("../../components/charts/TrendChart"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-64 w-full" />,
+});
 
 export default function AdminAnalytics() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [logs, setLogs] = useState([]);
-  const [actions, setActions] = useState([]);
+  const { instituteId } = useAuth();
   const [auditAction, setAuditAction] = useState("");
   const [auditQ, setAuditQ] = useState("");
-  const [rag, setRag] = useState(null); // {connected, tenant, usage} from /admin/rag/usage
+  const [auditSearch, setAuditSearch] = useState(""); // the q actually searched
+  const analyticsQ = useApi(`/admin/analytics?institute_id=${instituteId}`);
+  const ragQ = useApi("/admin/rag/usage");
+  // F18: audit logs reload when the action filter changes or a search is run.
+  const auditQuery = useApi(
+    `/admin/audit-logs?action=${encodeURIComponent(auditAction)}&q=${encodeURIComponent(auditSearch)}`);
 
-  async function loadAudit() {
-    try {
-      const res = await api(
-        `/admin/audit-logs?action=${encodeURIComponent(auditAction)}&q=${encodeURIComponent(auditQ)}`
-      );
-      setLogs(res.logs || []);
-      setActions(res.actions || []);
-    } catch (e) {
-      console.error("audit logs failed", e);
-    }
+  const data = analyticsQ.data;
+  const loading = !data && !analyticsQ.error;
+  const rag = ragQ.data || (ragQ.error ? { connected: false } : null);
+  const logs = auditQuery.data?.logs || [];
+  const actions = auditQuery.data?.actions || [];
+
+  function loadAudit() {
+    setAuditSearch(auditQ);
   }
-
-  useEffect(() => {
-    (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const institute_id = user?.user_metadata?.institute_id || "";
-      api("/admin/rag/usage")
-        .then(setRag)
-        .catch(() => setRag({ connected: false }));
-      try {
-        setData(await api(`/admin/analytics?institute_id=${institute_id}`));
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  // F18: (re)load audit logs when the action filter changes.
-  useEffect(() => { loadAudit(); }, [auditAction]);
 
   return (
     <Shell requireRole="admin" title="Institute Analytics">
-      {loading ? (
-        <p className="muted">Loading…</p>
-      ) : !data ? (
-        <p className="muted">No analytics available.</p>
+      {analyticsQ.error && !data ? (
+        <ErrorState message="Couldn't load the analytics." onRetry={() => analyticsQ.mutate()} />
+      ) : loading ? (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <SkeletonCard lines={1} /><SkeletonCard lines={1} /><SkeletonCard lines={1} /><SkeletonCard lines={1} />
+          </div>
+          <SkeletonCard lines={5} />
+        </div>
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -84,7 +64,7 @@ export default function AdminAnalytics() {
               {rag?.tenant && <span className="badge-brand">{rag.tenant}</span>}
             </h2>
             {!rag ? (
-              <p className="muted text-sm">Loading…</p>
+              <Skeleton className="h-20 w-full" />
             ) : !rag.connected ? (
               <p className="muted text-sm">RAG server not connected. Set RAG_SERVER_URL and the API key on the backend.</p>
             ) : (
@@ -111,18 +91,7 @@ export default function AdminAnalytics() {
             {(!data.engagement || data.engagement.length === 0) ? (
               <p className="muted text-sm">Not enough data yet.</p>
             ) : (
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={data.engagement}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.2)" />
-                  <XAxis dataKey="week" tick={{ fontSize: 12, fill: "#94a3b8" }} />
-                  <YAxis tick={{ fontSize: 12, fill: "#94a3b8" }} />
-                  <Tooltip
-                    contentStyle={{ background: "#0b1120", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, color: "#e2e8f0" }}
-                    cursor={{ stroke: "rgba(255,255,255,0.1)" }}
-                  />
-                  <Line type="monotone" dataKey="active" stroke="#4f46e5" strokeWidth={2} dot={{ fill: "#4f46e5" }} />
-                </LineChart>
-              </ResponsiveContainer>
+              <TrendChart data={data.engagement} xKey="week" yKey="active" label="Active students" />
             )}
           </div>
 

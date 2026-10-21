@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Shell from "../../components/Shell";
-import { EmptyState, SkeletonCard } from "../../components/ui";
+import { EmptyState, SkeletonCard, ErrorState } from "../../components/ui";
 import Icon from "../../components/Icon";
-import { api } from "../../lib/api";
+import { useToast } from "../../components/Toast";
+import { api, errorDetail } from "../../lib/api";
+import { useApi } from "../../lib/hooks";
 
 export default function ChallengesPage() {
-  const [list, setList] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+  const listQ = useApi("/challenges");
+  const list = listQ.data?.challenges || [];
+  const loading = !listQ.data && !listQ.error;
+  const load = () => listQ.mutate();
   const [form, setForm] = useState({ opponent_email: "", subject: "", num_questions: 5 });
   const [creating, setCreating] = useState(false);
   const [msg, setMsg] = useState("");
@@ -16,18 +21,6 @@ export default function ChallengesPage() {
   const [answers, setAnswers] = useState({});
   const [submitting, setSubmitting] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const res = await api("/challenges");
-      setList(res.challenges || []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => { load(); }, []);
 
   async function create(e) {
     e.preventDefault();
@@ -46,7 +39,7 @@ export default function ChallengesPage() {
       setForm((f) => ({ ...f, opponent_email: "", subject: "" }));
       load();
     } catch (e) {
-      setMsg(e.message);
+      setMsg(errorDetail(e));
     } finally {
       setCreating(false);
     }
@@ -58,7 +51,7 @@ export default function ChallengesPage() {
       setActive(res);
       setAnswers({});
     } catch (e) {
-      alert(e.message);
+      toast(errorDetail(e) || "Couldn't open that challenge. Please try again.", "error");
     }
   }
 
@@ -76,7 +69,8 @@ export default function ChallengesPage() {
       setActive({ ...active, result: res });
       load();
     } catch (e) {
-      alert(e.message);
+      // Answers stay on screen, so Submit can simply be pressed again.
+      toast(errorDetail(e) || "Couldn't submit — your answers are still here. Try again.", "error");
     } finally {
       setSubmitting(false);
     }
@@ -162,7 +156,9 @@ export default function ChallengesPage() {
         {msg && <p className="text-sm mt-3 text-brand dark:text-violet-400">{msg}</p>}
       </form>
 
-      {loading ? (
+      {listQ.error && !listQ.data ? (
+        <ErrorState compact message="Couldn't load your challenges." onRetry={load} />
+      ) : loading ? (
         <div className="space-y-3"><SkeletonCard lines={2} /><SkeletonCard lines={2} /></div>
       ) : list.length === 0 ? (
         <div className="card">

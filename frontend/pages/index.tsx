@@ -189,7 +189,7 @@ export default function Home() {
           </p>
           <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 mt-5">
             {COVERAGE.map((c) => (
-              <span key={c} className="text-sm font-semibold text-slate-400 dark:text-slate-500">{c}</span>
+              <span key={c} className="text-sm font-semibold text-slate-500 dark:text-slate-400">{c}</span>
             ))}
           </div>
         </div>
@@ -269,7 +269,7 @@ export default function Home() {
         <div className="grid md:grid-cols-3 gap-5 mt-12">
           {STEPS.map((s) => (
             <div key={s.n} className="card p-6">
-              <span className="text-2xl font-bold tracking-tight text-brand/30 dark:text-violet-400/30 tabular-nums">{s.n}</span>
+              <span className="text-2xl font-bold tracking-tight text-brand/70 dark:text-violet-400/70 tabular-nums">{s.n}</span>
               <p className="font-semibold mt-3 text-lg">{s.title}</p>
               <p className="muted text-sm mt-1.5 leading-relaxed">{s.text}</p>
             </div>

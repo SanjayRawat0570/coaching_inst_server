@@ -5,6 +5,7 @@ import { useAuth } from "../lib/useAuth";
 import { api } from "../lib/api";
 import ThemeToggle from "./ThemeToggle";
 import Icon from "./Icon";
+import { Skeleton } from "./ui";
 
 const NAV = {
   student: [
@@ -37,24 +38,39 @@ export default function Shell({ requireRole, title, subtitle, actions, children 
   const router = useRouter();
   const [open, setOpen] = useState(false); // mobile drawer
 
-  // F6: record a student's activity time once per app-open (best-effort).
+  // F6: record a student's activity once per app-open (per browser session), not on
+  // every page change — each page renders its own Shell (best-effort).
   useEffect(() => {
-    if (!loading && user && role === "student") {
-      api("/activity/ping", { method: "POST" }).catch(() => {});
+    if (loading || !user || role !== "student") return;
+    try {
+      if (sessionStorage.getItem("activity-pinged")) return;
+      sessionStorage.setItem("activity-pinged", "1");
+    } catch {
+      // storage blocked: ping anyway
     }
+    api("/activity/ping", { method: "POST" }).catch(() => {});
   }, [loading, user, role]);
 
+  // First load only (the session is read once per app visit): the layout's outline
+  // instead of a blank "Loading…" screen.
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="flex items-center gap-3 muted">
-          <span className="h-4 w-4 rounded-full bg-brand animate-pulse-glow" />
-          Loading…
+      <div className="min-h-screen lg:flex" aria-busy="true">
+        <div className="hidden lg:block w-64 h-screen border-r border-slate-200/80 dark:border-white/[0.07] p-5 space-y-3">
+          <Skeleton className="h-7 w-36" />
+          <Skeleton className="h-9 w-full mt-8" />
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
+        </div>
+        <div className="flex-1 p-6 space-y-4">
+          <Skeleton className="h-8 w-56" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-32 w-full" />
         </div>
       </div>
     );
   }
-  if (!user) return null; // useAuth redirects to "/"
+  if (!user) return null; // useAuth redirects to /login
 
   const links = NAV[role] || [];
   const name = user.user_metadata?.name || user.email;
@@ -64,6 +80,8 @@ export default function Shell({ requireRole, title, subtitle, actions, children 
     return (
       <Link
         href={href}
+        prefetch
+        aria-current={active ? "page" : undefined}
         onClick={() => setOpen(false)}
         className={
           "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition " +

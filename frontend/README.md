@@ -83,9 +83,22 @@ Browser ──(Supabase JS)──▶ Supabase Auth      → returns a JWT
 ```
 
 - [lib/supabase.ts](lib/supabase.ts) — Supabase client (login/signup, session).
-- [lib/useAuth.ts](lib/useAuth.ts) — auth hook; guards pages and exposes the current role.
-- [lib/api.ts](lib/api.ts) — fetch wrapper that attaches the Bearer token: `api()` (JSON),
-  `apiUpload()` (multipart, Study Material), `streamDoubt()` (SSE: tokens, `[STATUS]`,
+- [lib/useAuth.ts](lib/useAuth.ts) — `AuthProvider` (in `_app`) reads the session once per
+  visit (local, no network) and loads Supabase JS on demand; `useAuth({ requireRole })`
+  guards pages and exposes `user`, `role`, `instituteId`. An expired session sends the
+  user to `/login?expired=1` with a message.
+- [lib/hooks.ts](lib/hooks.ts) — `useApi(path)`: cached, de-duplicated GETs (SWR) that
+  revalidate on focus, so going back to a page is instant. Settings in
+  [lib/swrConfig.ts](lib/swrConfig.ts).
+- [components/Toast.tsx](components/Toast.tsx) — `useToast()` for small notices (optimistic
+  actions roll back with an error toast). [components/Resilience.tsx](components/Resilience.tsx)
+  — error boundary and offline banner. [components/Markdown.tsx](components/Markdown.tsx) —
+  answers as Markdown + KaTeX maths (doubt page only). Charts live in
+  [components/charts/](components/charts/) and load with `next/dynamic`.
+- [lib/api.ts](lib/api.ts) — fetch wrapper that attaches the Bearer token (a 401 refreshes
+  the session once and retries): `api()` (JSON), `apiUpload()` (multipart, Study Material),
+  `runJob()` / `pollJob()` (start a backend `?job=1` task and poll `GET /jobs/{id}` with
+  backoff), `streamDoubt()` (`signal` stops it; SSE: tokens, `[STATUS]`,
   `[ERROR]`, `[META]` → `onMeta`, `[DONE]`; multi-line `data:` events are joined with `\n`).
 - [lib/useTheme.ts](lib/useTheme.ts) — light/dark theme toggle.
 

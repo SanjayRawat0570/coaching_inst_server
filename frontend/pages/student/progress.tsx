@@ -1,70 +1,54 @@
-import { useEffect, useState } from "react";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-} from "recharts";
+import { useState } from "react";
+import dynamic from "next/dynamic";
 import Shell from "../../components/Shell";
-import { EmptyState, Stat, SkeletonCard, ResultsTable } from "../../components/ui";
+import { EmptyState, Stat, SkeletonCard, ResultsTable, ErrorState, Skeleton } from "../../components/ui";
 import Icon from "../../components/Icon";
-import { api } from "../../lib/api";
+import { useToast } from "../../components/Toast";
+import { api, errorDetail } from "../../lib/api";
+import { useApi } from "../../lib/hooks";
 
-function scoreColor(score) {
-  if (score >= 0.8) return "#16a34a"; // strong
-  if (score >= 0.5) return "#f59e0b"; // medium
-  return "#dc2626"; // weak
-}
+// Recharts loads only when a chart is drawn, after the page itself is on screen.
+const MasteryChart = dynamic(() => import("../../components/charts/MasteryChart"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-56 w-full" />,
+});
+
+const EMPTY = { weakness_map: [], profile: {}, recent_tests: [] };
 
 export default function ProgressPage() {
-  const [data, setData] = useState<any>({ weakness_map: [], profile: {}, recent_tests: [] });
-  const [cards, setCards] = useState([]);
+  const toast = useToast();
+  // Each section is its own cached request: coming back here is instant, and one
+  // slow or failing section never blanks the others.
+  const progressQ = useApi("/progress");
+  const dueQ = useApi("/flashcards/due");
+  const planQ = useApi("/student/plan");
+  const cmapQ = useApi("/student/concept-map");
+  const boardQ = useApi("/leaderboard");
+  const badgesQ = useApi("/badges");
+
+  const data: any = progressQ.data || EMPTY;
+  const cards = dueQ.data?.cards || [];
+  const plan = planQ.data?.plan || null;
+  const cmap = cmapQ.data || { nodes: [], built: false };
+  const board = boardQ.data?.leaderboard || [];
+  const badges = badgesQ.data?.badges || [];
+  const loading = !progressQ.data && !progressQ.error;
+
   const [revealed, setRevealed] = useState({});
-  const [loading, setLoading] = useState(true);
   const [examEdit, setExamEdit] = useState(false);
   const [examInput, setExamInput] = useState("");
   const [savingExam, setSavingExam] = useState(false);
-  const [plan, setPlan] = useState(null);
   const [planBusy, setPlanBusy] = useState(false);
-  const [cmap, setCmap] = useState({ nodes: [], built: false });
   const [cmapBusy, setCmapBusy] = useState(false);
-  const [board, setBoard] = useState([]);
-  const [badges, setBadges] = useState([]);
-
-  async function load() {
-    setLoading(true);
-    try {
-      const [progress, due, planRes, cmapRes, lbRes, bgRes] = await Promise.all([
-        api("/progress"),
-        api("/flashcards/due"),
-        api("/student/plan").catch(() => ({ plan: null })),
-        api("/student/concept-map").catch(() => ({ nodes: [], built: false })),
-        api("/leaderboard").catch(() => ({ leaderboard: [] })),
-        api("/badges").catch(() => ({ badges: [] })),
-      ]);
-      setData(progress);
-      setCards(due.cards || []);
-      setPlan(planRes.plan || null);
-      setCmap(cmapRes || { nodes: [], built: false });
-      setBoard(lbRes.leaderboard || []);
-      setBadges(bgRes.badges || []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function generatePlan() {
     setPlanBusy(true);
     try {
       const res = await api("/student/plan/generate", { method: "POST" });
-      setPlan(res.plan || null);
+      planQ.mutate({ plan: res.plan || null }, { revalidate: false });
+      toast("Your new study plan is ready.");
     } catch (e) {
-      console.error(e);
+      toast(errorDetail(e) || "Couldn't generate a plan. Please try again.", "error");
     } finally {
       setPlanBusy(false);
     }
@@ -74,32 +58,37 @@ export default function ProgressPage() {
     setCmapBusy(true);
     try {
       const res = await api("/student/concept-map/build", { method: "POST" });
-      setCmap(res || { nodes: [], built: false });
+      cmapQ.mutate(res || { nodes: [], built: false }, { revalidate: false });
     } catch (e) {
-      console.error(e);
+      toast(errorDetail(e) || "Couldn't build the map. Please try again.", "error");
     } finally {
       setCmapBusy(false);
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
-
+  // Optimistic: the card leaves the list at once; it comes back if the save fails.
   async function review(cardId, quality) {
-    await api("/flashcards/review", { method: "POST", body: { card_id: cardId, quality } });
-    setCards((c) => c.filter((x) => x.id !== cardId));
+    const before = dueQ.data;
+    dueQ.mutate({ ...before, cards: cards.filter((x) => x.id !== cardId) }, { revalidate: false });
+    try {
+      await api("/flashcards/review", { method: "POST", body: { card_id: cardId, quality } });
+    } catch (e) {
+      dueQ.mutate(before, { revalidate: false });
+      toast("Couldn't save that review — the card is back. Please try again.", "error");
+    }
   }
 
   async function saveExam() {
     setSavingExam(true);
+    const exam = examInput.trim();
+    const before = progressQ.data;
+    progressQ.mutate({ ...data, profile: { ...data.profile, target_exam: exam || null } }, { revalidate: false });
+    setExamEdit(false);
     try {
-      const exam = examInput.trim();
       await api("/profile", { method: "POST", body: { target_exam: exam } });
-      setData((d) => ({ ...d, profile: { ...d.profile, target_exam: exam || null } }));
-      setExamEdit(false);
     } catch (e) {
-      console.error(e);
+      progressQ.mutate(before, { revalidate: false });
+      toast("Couldn't save your target exam. Please try again.", "error");
     } finally {
       setSavingExam(false);
     }
@@ -117,7 +106,9 @@ export default function ProgressPage() {
       title="My Progress"
       subtitle="Track your streak, mastery, and what to revise next"
     >
-      {loading ? (
+      {progressQ.error && !progressQ.data ? (
+        <ErrorState message="Couldn't load your progress." onRetry={() => progressQ.mutate()} />
+      ) : loading ? (
         <div className="grid md:grid-cols-3 gap-4">
           <SkeletonCard lines={1} />
           <SkeletonCard lines={1} />
@@ -213,21 +204,7 @@ export default function ProgressPage() {
                 hint="Take a test and your per-concept weakness map will appear here."
               />
             ) : (
-              <ResponsiveContainer width="100%" height={Math.max(220, chart.length * 34)}>
-                <BarChart data={chart} layout="vertical" margin={{ left: 40 }}>
-                  <XAxis type="number" domain={[0, 100]} hide />
-                  <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 12, fill: "#94a3b8" }} />
-                  <Tooltip
-                    contentStyle={{ background: "#0b1120", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, color: "#e2e8f0" }}
-                    cursor={{ fill: "rgba(255,255,255,0.04)" }}
-                  />
-                  <Bar dataKey="score" radius={[0, 6, 6, 0]}>
-                    {chart.map((entry, i) => (
-                      <Cell key={i} fill={scoreColor(entry.raw)} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <MasteryChart data={chart} />
             )}
           </div>
 
@@ -237,6 +214,7 @@ export default function ProgressPage() {
               <Icon name="trophy" size={16} /> Your badges
               <span className="badge-brand">{badges.filter((b) => b.earned).length}/{badges.length}</span>
             </h2>
+            {!badgesQ.data && <Skeleton className="h-24 w-full" />}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {badges.map((b) => (
                 <div
@@ -265,7 +243,9 @@ export default function ProgressPage() {
             <h2 className="h-section mb-3 flex items-center gap-2">
               <Icon name="trophy" size={16} /> Class leaderboard · Top 10
             </h2>
-            {board.length === 0 ? (
+            {!boardQ.data ? (
+              <Skeleton className="h-24 w-full" />
+            ) : board.length === 0 ? (
               <p className="muted text-sm">No XP earned in your class yet — be the first!</p>
             ) : (
               <div className="space-y-2">
@@ -314,7 +294,9 @@ export default function ProgressPage() {
                 {planBusy ? "Generating…" : plan ? "Regenerate" : "Generate plan"}
               </button>
             </div>
-            {!plan ? (
+            {!planQ.data && !planQ.error ? (
+              <Skeleton className="h-24 w-full" />
+            ) : !plan ? (
               <EmptyState
                 icon={<Icon name="calendar" size={26} />}
                 title="No study plan yet"
@@ -350,7 +332,9 @@ export default function ProgressPage() {
                 {cmapBusy ? "Building…" : cmap.built ? "Rebuild" : "Build map"}
               </button>
             </div>
-            {!cmap.nodes?.length ? (
+            {!cmapQ.data && !cmapQ.error ? (
+              <Skeleton className="h-16 w-full" />
+            ) : !cmap.nodes?.length ? (
               <EmptyState
                 icon={<Icon name="concepts" size={26} />}
                 title="No concept map yet"
@@ -401,7 +385,11 @@ export default function ProgressPage() {
               Flashcards due today
               <span className="badge-cyan">{cards.length}</span>
             </h2>
-            {cards.length === 0 ? (
+            {dueQ.error && !dueQ.data ? (
+              <ErrorState compact message="Couldn't load your flashcards." onRetry={() => dueQ.mutate()} />
+            ) : !dueQ.data ? (
+              <Skeleton className="h-24 w-full" />
+            ) : cards.length === 0 ? (
               <EmptyState icon={<Icon name="celebrate" size={26} />} title="All caught up!" hint="No flashcards are due right now — nice work." />
             ) : (
               <div className="grid md:grid-cols-2 gap-3">
@@ -415,19 +403,19 @@ export default function ProgressPage() {
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => review(c.id, 1)}
-                            className="flex-1 bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 rounded-lg py-1 text-sm hover:bg-rose-500/25"
+                            className="flex-1 bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 rounded-lg min-h-[40px] text-sm hover:bg-rose-500/25"
                           >
                             Forgot
                           </button>
                           <button
                             onClick={() => review(c.id, 3)}
-                            className="flex-1 bg-amber-400/15 text-amber-600 dark:text-amber-300 border border-amber-400/30 rounded-lg py-1 text-sm hover:bg-amber-400/25"
+                            className="flex-1 bg-amber-400/15 text-amber-600 dark:text-amber-300 border border-amber-400/30 rounded-lg min-h-[40px] text-sm hover:bg-amber-400/25"
                           >
                             Hard
                           </button>
                           <button
                             onClick={() => review(c.id, 5)}
-                            className="flex-1 bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30 rounded-lg py-1 text-sm hover:bg-emerald-500/25"
+                            className="flex-1 bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30 rounded-lg min-h-[40px] text-sm hover:bg-emerald-500/25"
                           >
                             Easy
                           </button>

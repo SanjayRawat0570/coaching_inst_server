@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import Shell from "../../components/Shell";
-import { EmptyState, SkeletonCard } from "../../components/ui";
+import { EmptyState, SkeletonCard, ErrorState } from "../../components/ui";
 import Icon from "../../components/Icon";
 import { api, apiUpload, errorDetail } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
+import { useApi } from "../../lib/hooks";
+import { useAuth } from "../../lib/useAuth";
 
 // Mirrors backend rag/study_materials.py.
 const ACCEPT = ".pdf,.docx,.pptx,.xlsx,.txt,.md,.html,.json,.xml,.jpg,.jpeg,.png,.bmp,.tif,.tiff";
@@ -20,33 +21,25 @@ const EXAMS = ["JEE", "NEET", "Boards", "Other"];
 const EMPTY_FORM = { subject: "", chapter: "", class_level: "", exam: "JEE", material_type: "notes" };
 
 export default function MaterialsPage() {
-  const [materials, setMaterials] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { role } = useAuth();
+  const isAdmin = role === "admin";
+  // Re-polls every 3 s while any file is still indexing, else only on focus.
+  const listQ = useApi("/teacher/materials", {
+    refreshInterval: (d: any) => ((d?.materials || []).some((m) => m.status === "running") ? 3000 : 0),
+  });
+  const materials = listQ.data?.materials || [];
+  const loading = !listQ.data && !listQ.error;
+  const setMaterials = (fn) =>
+    listQ.mutate((d: any) => ({ ...(d || {}), materials: fn(d?.materials || []) }), { revalidate: false });
   const [form, setForm] = useState<any>(EMPTY_FORM);
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState({ text: "", error: false });
   const [busyId, setBusyId] = useState(null); // row being re-indexed / deleted
-  const [isAdmin, setIsAdmin] = useState(false);
   const [reindexingAll, setReindexingAll] = useState(false);
   const fileRef = useRef(null);
 
-  async function load({ quiet = false } = {}) {
-    if (!quiet) setLoading(true);
-    try {
-      const data = await api("/teacher/materials");
-      setMaterials(data.materials || []);
-    } catch (e) {
-      if (!quiet) setMsg({ text: errorDetail(e), error: true });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    supabase.auth.getUser().then(({ data }) => setIsAdmin(data?.user?.user_metadata?.role === "admin"));
-  }, []);
+  const load = (_opts?: { quiet?: boolean }) => listQ.mutate();
 
   // Admin: re-send every stored original (after the RAG server lost its data).
   async function reindexAll() {
@@ -68,13 +61,6 @@ export default function MaterialsPage() {
     }
   }
 
-  // Poll every 3 s while anything is still indexing.
-  const anyRunning = materials.some((m) => m.status === "running");
-  useEffect(() => {
-    if (!anyRunning) return;
-    const t = setInterval(() => load({ quiet: true }), 3000);
-    return () => clearInterval(t);
-  }, [anyRunning]);
 
   function pickFile(e) {
     const f = e.target.files?.[0] || null;
@@ -213,7 +199,9 @@ export default function MaterialsPage() {
         )}
       </form>
 
-      {loading ? (
+      {listQ.error && !listQ.data ? (
+        <ErrorState message="Couldn't load your study material." onRetry={() => load()} />
+      ) : loading ? (
         <div className="space-y-4">
           <SkeletonCard lines={3} />
           <SkeletonCard lines={3} />

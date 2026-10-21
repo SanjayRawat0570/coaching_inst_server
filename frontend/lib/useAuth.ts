@@ -1,56 +1,81 @@
-import { useEffect, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import { supabase } from "./supabase";
+
+// Supabase JS (~55 kB gzip) is loaded on demand, so pages that never need a
+// session (landing, architecture) don't download it.
+const loadSupabase = () => import("./supabase").then((m) => m.supabase);
 
 /**
- * Auth hook + optional route guard.
- * useAuth({ requireRole: "student" }) redirects to "/" if not logged in / wrong role.
- * requireRole may also be a list: { requireRole: ["teacher", "admin"] }.
+ * One auth state for the whole app (AuthProvider in _app), so moving between pages
+ * never waits for a fresh auth round trip or flashes a "Loading…" screen.
+ *
+ * The session is read from local storage (getSession, no network); supabase-js
+ * refreshes the token in the background. The backend still verifies the token on
+ * every request — this only decides what the UI shows.
  */
-export function useAuth({ requireRole }: { requireRole?: string | string[] } = {}) {
-  // A stable string key, so a list literal doesn't re-run the effect every render.
-  const roleKey = Array.isArray(requireRole) ? requireRole.join(",") : requireRole || "";
+type AuthState = { user: any; role: string | null; ready: boolean };
+
+const AuthContext = createContext<AuthState>({ user: null, role: null, ready: false });
+
+export function AuthProvider({ children }) {
   const router = useRouter();
-  const [user, setUser] = useState(null);
-  const [role, setRole] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState<AuthState>({ user: null, role: null, ready: false });
 
   useEffect(() => {
     let active = true;
-
-    async function load() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    let unsubscribe = () => {};
+    const apply = (session) => {
       if (!active) return;
-
-      if (!user) {
-        setLoading(false);
-        if (roleKey) router.replace("/login");
-        return;
-      }
-      const r = user.user_metadata?.role || null;
-      setUser(user);
-      setRole(r);
-      setLoading(false);
-
-      if (roleKey && !roleKey.split(",").includes(r)) {
-        router.replace("/login");
-      }
-    }
-
-    load();
-    const { data: sub } = supabase.auth.onAuthStateChange(() => load());
+      const user = session?.user || null;
+      setState({ user, role: user?.user_metadata?.role || null, ready: true });
+    };
+    loadSupabase().then((supabase) => {
+      if (!active) return;
+      supabase.auth.getSession().then(({ data }) => apply(data.session));
+      const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+        apply(session);
+        // The refresh token expired or was revoked: say so instead of a broken page.
+        if (event === "SIGNED_OUT" && !signingOut && router.pathname !== "/login" && router.pathname !== "/") {
+          router.replace("/login?expired=1");
+        }
+      });
+      unsubscribe = () => sub?.subscription?.unsubscribe();
+    });
     return () => {
       active = false;
-      sub?.subscription?.unsubscribe();
+      unsubscribe();
     };
-  }, [roleKey, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return createElement(AuthContext.Provider, { value: state }, children);
+}
+
+let signingOut = false;
+
+/** The signed-in user, plus an optional route guard: useAuth({ requireRole: "student" })
+ * (or a list of roles) sends anyone else to /login. */
+export function useAuth({ requireRole }: { requireRole?: string | string[] } = {}) {
+  const roleKey = Array.isArray(requireRole) ? requireRole.join(",") : requireRole || "";
+  const router = useRouter();
+  const { user, role, ready } = useContext(AuthContext);
+
+  useEffect(() => {
+    if (!ready || !roleKey) return;
+    if (!user || !roleKey.split(",").includes(role)) router.replace("/login");
+  }, [ready, user, role, roleKey, router]);
 
   const logout = async () => {
-    await supabase.auth.signOut();
+    signingOut = true;
+    await (await loadSupabase()).auth.signOut();
+    signingOut = false;
     router.replace("/");
   };
 
-  return { user, role, loading, logout };
+  return useMemo(
+    () => ({ user, role, loading: !ready, ready, logout,
+             instituteId: user?.user_metadata?.institute_id || "" }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user, role, ready],
+  );
 }

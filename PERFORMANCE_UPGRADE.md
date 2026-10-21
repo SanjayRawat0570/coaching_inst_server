@@ -236,3 +236,37 @@ Linux / Python 3.11 — confirm on the first Railway build.
 | Flashcard reminder trigger | interval from each process's start | cron */5, aligned across workers |
 | Per-student job loops | one student at a time | batches of 50, 3 at a time (2 for emailing jobs, 1 for the inactivity job) |
 | Job visibility | a print of the result | duration + outcome logged and kept in LAST_RUNS |
+
+## Phase 5 results (2026-10-22)
+
+`next build`, First Load JS:
+
+| Page | Phase 0 | Phase 5 |
+|---|---|---|
+| /teacher/dashboard | 259 kB | 167 kB |
+| /admin/analytics | 257 kB | 165 kB |
+| /student/progress | 252 kB | 166 kB |
+| /student/doubt | 154 kB | 159 kB (Markdown + KaTeX load as a separate chunk) |
+| other signed-in pages | 154 kB | 163 kB (SWR, toasts) |
+| /login | 152 kB | 156 kB |
+| / and /architecture | 91.7 / 92.5 kB | 95.2 / 95.9 kB |
+
+Lighthouse (local production build, median of 3 mobile runs):
+
+| Page | Phase 0 mobile perf / a11y | Phase 5 mobile perf / a11y | Phase 5 desktop perf / a11y |
+|---|---|---|---|
+| / | 81 / 91 | 89 / 100 | 100 / 100 |
+| /login | 96 / 96 | 94 / 100 | 100 / 100 |
+
+Logged-in pages still need a manual Lighthouse run while signed in (DevTools).
+
+What changed: one auth state per visit (no `getUser()` round trip or "Loading…" screen per
+navigation; Supabase JS loaded on demand); SWR data hooks; skeletons + Retry error
+states; optimistic flashcard review, alert read, test approve/reject, doubt rating, target
+exam, with toasts and rollback; doubt page with Markdown + maths, rAF-batched streaming,
+bottom-only auto-scroll, Stop / Retry, step line; test page autosave + restore, wall-clock
+timer, leave warning, submit as a background job with retry that never submits twice;
+teacher test generation as background jobs with live status; Recharts behind
+`next/dynamic`; Inter via `next/font`; scroll restoration; 40 px tap targets, visible
+keyboard focus, input labels, reduced motion; error boundary, offline banner, expired
+session -> /login with a message.

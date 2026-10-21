@@ -1,11 +1,27 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Shell from "../../components/Shell";
 import Icon from "../../components/Icon";
+import { useToast } from "../../components/Toast";
 import { api, streamDoubt } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
+import { useAuth } from "../../lib/useAuth";
+
+// Markdown + KaTeX are a separate chunk, fetched when this page opens; until it
+// arrives an answer shows as plain text (never blank).
+function useMarkdown() {
+  const [Md, setMd] = useState<any>(null);
+  useEffect(() => {
+    let alive = true;
+    import("../../components/Markdown").then((m) => alive && setMd(() => m.default));
+    return () => { alive = false; };
+  }, []);
+  return Md;
+}
 
 export default function DoubtPage() {
-  const [messages, setMessages] = useState([]); // {role, content, meta?, rating?}
+  const toast = useToast();
+  const Markdown = useMarkdown();
+  const { instituteId } = useAuth();
+  const [messages, setMessages] = useState([]); // {role, content, meta?, rating?, error?, stopped?}
   const [conversationId, setConversationId] = useState(null); // RAG_SERVER chat memory
   const [input, setInput] = useState("");
   const [subject, setSubject] = useState("");
@@ -14,12 +30,55 @@ export default function DoubtPage() {
   const [streaming, setStreaming] = useState(false);
   const [image, setImage] = useState(null); // base64 (no data: prefix)
   const fileRef = useRef(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const atBottom = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastAsk = useRef<{ question: string; image: string | null } | null>(null);
+
+  // Tokens arrive many times a second; they're collected here and drawn at most
+  // once per animation frame, so long answers stream smoothly.
+  const pending = useRef("");
+  const frame = useRef(0);
+
+  function flush() {
+    frame.current = 0;
+    const chunk = pending.current;
+    if (!chunk) return;
+    pending.current = "";
+    setMessages((m) => {
+      const copy = [...m];
+      const last = copy[copy.length - 1];
+      copy[copy.length - 1] = { ...last, content: last.content + chunk };
+      return copy;
+    });
+  }
+
+  function queueToken(t) {
+    pending.current += t;
+    if (!frame.current) frame.current = requestAnimationFrame(flush);
+  }
+
+  useEffect(() => () => {
+    if (frame.current) cancelAnimationFrame(frame.current);
+    abortRef.current?.abort();
+  }, []);
+
+  // Follow the answer only while the reader is at the bottom; scrolling up to
+  // re-read something isn't interrupted.
+  function onScroll() {
+    const el = listRef.current;
+    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }
+  useEffect(() => {
+    const el = listRef.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   // ── Hindi voice input via the browser Web Speech API (free, Chrome) ──────────
   function startVoice() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
-      alert("Voice input needs Chrome.");
+      toast("Voice input needs Chrome.", "info");
       return;
     }
     const rec = new SR();
@@ -36,68 +95,86 @@ export default function DoubtPage() {
     reader.readAsDataURL(file);
   }
 
-  async function send() {
-    const question = input.trim();
-    if (!question && !image) return;
+  function updateLast(patch) {
+    setMessages((m) => {
+      const copy = [...m];
+      copy[copy.length - 1] = { ...copy[copy.length - 1], ...patch };
+      return copy;
+    });
+  }
 
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
-    const isFirstMessage = messages.length === 0;
-    const userMsg = { role: "user", content: question || "[image question]" };
-    setMessages((m) => [...m, userMsg, { role: "assistant", content: "" }]);
-    setInput("");
+  async function ask(question: string, img: string | null, { retry = false } = {}) {
+    const history = messages
+      .filter((m) => !m.error)
+      .map((m) => ({ role: m.role, content: m.content }));
+    const isFirstMessage = !messages.some((m) => m.role === "assistant" && !m.error);
+    lastAsk.current = { question, image: img };
+    if (retry) {
+      // Replace the failed answer bubble instead of adding another question.
+      setMessages((m) => [...m.slice(0, -1), { role: "assistant", content: "" }]);
+    } else {
+      setMessages((m) => [...m, { role: "user", content: question || "[image question]" },
+                          { role: "assistant", content: "" }]);
+    }
+    atBottom.current = true;
     setStreaming(true);
-    setStatus("Thinking…");
-
-    // institute_id comes from the logged-in user's metadata
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const institute_id = user?.user_metadata?.institute_id || "";
+    setStatus("Reading your question…");
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     await streamDoubt(
       {
-        institute_id,
+        institute_id: instituteId,
         question,
         subject,
         socratic,
-        image_b64: image,
+        image_b64: img,
         conversation_history: history,
         conversation_id: conversationId,
         new_conversation: isFirstMessage,
       },
       {
+        signal: controller.signal,
         onStatus: (s) => setStatus(s),
         onMeta: (meta) => {
           if (meta?.conversation_id) setConversationId(meta.conversation_id);
-          setMessages((m) => {
-            const copy = [...m];
-            copy[copy.length - 1] = { ...copy[copy.length - 1], meta };
-            return copy;
-          });
+          flush();
+          updateLast({ meta });
         },
-        onToken: (t) =>
-          setMessages((m) => {
-            const copy = [...m];
-            copy[copy.length - 1] = {
-              ...copy[copy.length - 1],
-              content: copy[copy.length - 1].content + t,
-            };
-            return copy;
-          }),
-        onError: (msg) =>
-          setMessages((m) => {
-            const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: `Error: ${msg}` };
-            return copy;
-          }),
+        onToken: (t) => {
+          setStatus("Writing the answer…");
+          queueToken(t);
+        },
+        onError: (msg) => {
+          pending.current = "";
+          updateLast({ content: msg, error: true });
+        },
         onDone: () => {
+          flush();
+          if (controller.signal.aborted) updateLast({ stopped: true });
+          abortRef.current = null;
           setStreaming(false);
           setStatus("");
           setImage(null);
           if (fileRef.current) fileRef.current.value = "";
         },
-      }
+      },
     );
+  }
+
+  function send() {
+    const question = input.trim();
+    if ((!question && !image) || streaming) return;
+    setInput("");
+    ask(question, image);
+  }
+
+  function stop() {
+    abortRef.current?.abort();
+  }
+
+  function retry() {
+    if (lastAsk.current && !streaming) ask(lastAsk.current.question, lastAsk.current.image, { retry: true });
   }
 
   function newChat() {
@@ -115,16 +192,22 @@ export default function DoubtPage() {
     setRating(helpful ? "up" : "down");
     try {
       await api("/doubt/feedback", { method: "POST", body: { doubt_id: msg.meta.doubt_id, helpful } });
+      toast("Thanks for the feedback!");
     } catch (e) {
       // 409 = already rated earlier: keep the choice shown.
-      if (!String(e.message).includes("already rated")) setRating(null);
+      if (!String(e.message).includes("already rated")) {
+        setRating(null);
+        toast("Couldn't save your rating. Please try again.", "error");
+      }
     }
   }
 
   return (
     <Shell requireRole="student" title="Ask a Doubt" subtitle="24/7 AI tutor — answers from NCERT & your institute notes">
       <div className="flex flex-wrap items-center gap-3 mb-4">
+        <label className="sr-only" htmlFor="doubt-subject">Subject</label>
         <input
+          id="doubt-subject"
           type="text"
           autoComplete="off"
           className="input max-w-[200px]"
@@ -132,10 +215,10 @@ export default function DoubtPage() {
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
         />
-        <label className="flex items-center gap-2 text-sm muted cursor-pointer select-none">
+        <label className="flex items-center gap-2 text-sm muted cursor-pointer select-none min-h-[40px]">
           <input
             type="checkbox"
-            className="accent-[#7c5cff]"
+            className="accent-[#7c5cff] h-4 w-4"
             checked={socratic}
             onChange={(e) => setSocratic(e.target.checked)}
           />
@@ -151,7 +234,14 @@ export default function DoubtPage() {
         </button>
       </div>
 
-      <div className="card h-[55vh] overflow-y-auto p-4 space-y-4">
+      <div
+        ref={listRef}
+        onScroll={onScroll}
+        className="card h-[55vh] overflow-y-auto p-4 space-y-4"
+        role="log"
+        aria-live="polite"
+        aria-busy={streaming}
+      >
         {messages.length === 0 && (
           <div className="empty-state h-full">
             <span className="icon"><Icon name="doubt" size={26} /></span>
@@ -164,7 +254,7 @@ export default function DoubtPage() {
         {messages.map((m, i) => {
           const isUser = m.role === "user";
           const isLast = i === messages.length - 1;
-          const split = isUser ? { body: m.content, confidence: null } : splitConfidence(m.content);
+          const split = isUser || m.error ? { body: m.content, confidence: null } : splitConfidence(m.content);
           const body = split.body;
           // RAG_SERVER's confidence ([META]) wins over a "CONFIDENCE: XX%" line in the text.
           const confidence = m.meta ? m.meta.confidence ?? null : split.confidence;
@@ -179,23 +269,37 @@ export default function DoubtPage() {
               >
                 <Icon name={isUser ? "user" : "bot"} size={16} className={isUser ? "text-white" : ""} />
               </span>
-              <div className={"flex flex-col gap-1 max-w-[80%] " + (isUser ? "items-end" : "items-start")}>
+              <div className={"flex flex-col gap-1 max-w-[85%] min-w-0 " + (isUser ? "items-end" : "items-start")}>
                 <div
                   className={
-                    "px-4 py-2.5 rounded-2xl whitespace-pre-wrap leading-relaxed shadow-sm " +
+                    "px-4 py-2.5 rounded-2xl leading-relaxed shadow-sm max-w-full overflow-x-auto " +
                     (isUser
-                      ? "bg-brand-grad text-white rounded-br-sm shadow-glow"
+                      ? "whitespace-pre-wrap bg-brand-grad text-white rounded-br-sm shadow-glow"
+                      : m.error
+                      ? "bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:border-rose-400/25 rounded-bl-sm"
                       : "bg-slate-100 text-slate-800 dark:bg-ink-700 dark:text-slate-100 rounded-bl-sm")
                   }
                 >
-                  {body || (streaming && isLast ? (
-                    <span className="inline-flex gap-1 py-1">
+                  {isUser || m.error ? (
+                    body
+                  ) : body ? (
+                    Markdown ? <Markdown>{body}</Markdown> : <span className="whitespace-pre-wrap">{body}</span>
+                  ) : streaming && isLast ? (
+                    <span className="inline-flex gap-1 py-1" aria-label="Writing the answer">
                       <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "0ms" }} />
                       <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "150ms" }} />
                       <span className="h-2 w-2 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: "300ms" }} />
                     </span>
-                  ) : "")}
+                  ) : (
+                    ""
+                  )}
                 </div>
+                {!isUser && m.error && isLast && !streaming && (
+                  <button onClick={retry} className="btn-ghost text-xs">
+                    <Icon name="arrowRight" size={14} /> Retry
+                  </button>
+                )}
+                {!isUser && m.stopped && <p className="text-xs muted">Stopped.</p>}
                 {!isUser && m.meta && <SourceChips citations={m.meta.citations} />}
                 {!isUser && gap && (
                   <p className="text-xs rounded-lg px-2.5 py-1.5 bg-amber-500/10 text-amber-700 border border-amber-500/20 dark:text-amber-300 dark:border-amber-400/25">
@@ -217,8 +321,9 @@ export default function DoubtPage() {
                             disabled={!!m.rating}
                             title={b.title}
                             aria-label={b.title}
+                            aria-pressed={m.rating === b.key}
                             className={
-                              "text-sm px-1.5 py-0.5 rounded-md transition " +
+                              "text-sm min-h-[40px] min-w-[40px] rounded-md transition " +
                               (m.rating === b.key
                                 ? "bg-brand/15 ring-1 ring-brand/30"
                                 : m.rating
@@ -239,7 +344,15 @@ export default function DoubtPage() {
         })}
       </div>
 
-      {status && <p className="text-xs muted mt-2">{status}</p>}
+      {/* Where the answer is: Reading your question… → Searching your notes… → Writing the answer… */}
+      <p className="text-xs muted mt-2 min-h-[1rem] flex items-center gap-1.5" aria-live="polite">
+        {status && (
+          <>
+            <span className="h-1.5 w-1.5 rounded-full bg-brand animate-pulse" />
+            {status}
+          </>
+        )}
+      </p>
       {image && <p className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-300 mt-2"><Icon name="camera" size={13} /> Image attached</p>}
 
       <div className="flex items-center gap-2 mt-3">
@@ -261,20 +374,24 @@ export default function DoubtPage() {
           className="hidden"
           onChange={onPickImage}
         />
+        {/* The box stays usable while an answer streams: type the next question. */}
         <input
-          className="input flex-1"
+          className="input flex-1 min-w-0"
+          aria-label="Your doubt"
           placeholder="Type your doubt…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !streaming && send()}
+          onKeyDown={(e) => e.key === "Enter" && send()}
         />
-        <button
-          onClick={send}
-          disabled={streaming}
-          className="btn-primary px-5"
-        >
-          Send <Icon name="send" size={16} />
-        </button>
+        {streaming ? (
+          <button onClick={stop} className="btn-ghost px-5" aria-label="Stop the answer">
+            Stop
+          </button>
+        ) : (
+          <button onClick={send} className="btn-primary px-5">
+            Send <Icon name="send" size={16} />
+          </button>
+        )}
       </div>
     </Shell>
   );

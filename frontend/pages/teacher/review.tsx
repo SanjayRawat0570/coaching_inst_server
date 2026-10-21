@@ -1,16 +1,25 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import Shell from "../../components/Shell";
-import { EmptyState, SkeletonCard } from "../../components/ui";
+import { EmptyState, SkeletonCard, ErrorState } from "../../components/ui";
 import Icon from "../../components/Icon";
-import { api } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
+import { useToast } from "../../components/Toast";
+import { api, errorDetail, runJob } from "../../lib/api";
+import { useApi } from "../../lib/hooks";
+import { useAuth } from "../../lib/useAuth";
 
+// What a background job's status means to the teacher.
+const JOB_STEP = { queued: "Queued — starting in a moment…", running: "The AI is drafting and self-reviewing questions…" };
 
 export default function ReviewPage() {
   const router = useRouter();
-  const [pending, setPending] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+  const { instituteId: institute_id } = useAuth();
+  const pendingQ = useApi(`/teacher/tests/pending?institute_id=${institute_id}`);
+  const pending = pendingQ.data?.tests || [];
+  const loading = !pendingQ.data && !pendingQ.error;
+  const setPending = (fn) =>
+    pendingQ.mutate((d: any) => ({ ...(d || {}), tests: fn(d?.tests || []) }), { revalidate: false });
   const [editing, setEditing] = useState(null); // {id, questions}
   const [busy, setBusy] = useState(false);
   const [dueDates, setDueDates] = useState({}); // F7: test.id -> due date
@@ -21,42 +30,27 @@ export default function ReviewPage() {
   const [genMsg, setGenMsg] = useState("");
   const [classBusy, setClassBusy] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const institute_id = user?.user_metadata?.institute_id || "";
-    try {
-      const data = await api(`/teacher/tests/pending?institute_id=${institute_id}`);
-      setPending(data.tests || []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const load = () => pendingQ.mutate();
 
   async function generateClass() {
     setClassBusy(true);
-    setGenMsg("Generating one personalized test per student — this can take a moment…");
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const institute_id = user?.user_metadata?.institute_id || "";
+    setGenMsg("Generating one personalized test per student — this can take a few minutes…");
     try {
-      const res = await api("/teacher/tests/generate-class", {
-        method: "POST",
+      // A background job: the page stays responsive and shows where it is.
+      const res = await runJob("/teacher/tests/generate-class", {
         body: {
           institute_id,
           subject: gen.subject || null,
           num_questions: Number(gen.num_questions) || 10,
         },
+        onStatus: (st) => setGenMsg(st === "running"
+          ? "Generating one personalized test per student — this can take a few minutes…"
+          : JOB_STEP[st] || st),
       });
       setGenMsg(`Generated ${res.generated}/${res.students} student tests — review and approve below.`);
       await load();
     } catch (err) {
-      setGenMsg(`Error: ${err.message}`);
+      setGenMsg(`Error: ${errorDetail(err)}`);
     } finally {
       setClassBusy(false);
     }
@@ -70,14 +64,10 @@ export default function ReviewPage() {
       return;
     }
     setGenerating(true);
-    setGenMsg("Generating — the AI is drafting and self-reviewing questions…");
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const institute_id = user?.user_metadata?.institute_id || "";
+    setGenMsg(JOB_STEP.queued);
     try {
-      const res = await api("/test/generate", {
-        method: "POST",
+      const res = await runJob("/test/generate", {
+        onStatus: (st) => setGenMsg(JOB_STEP[st] || st),
         body: {
           student_id: email, // backend resolves the email to the student
           institute_id,
@@ -94,15 +84,11 @@ export default function ReviewPage() {
       setGen((g) => ({ ...g, student_email: "" }));
       await load();
     } catch (err) {
-      setGenMsg(`Error: ${err.message}`);
+      setGenMsg(`Error: ${errorDetail(err)}`);
     } finally {
       setGenerating(false);
     }
   }
-
-  useEffect(() => {
-    load();
-  }, []);
 
   // Prefill the student's email when arriving from the dashboard roster
   // (/teacher/review?student=email).
@@ -114,8 +100,11 @@ export default function ReviewPage() {
     }
   }, [router.isReady, router.query.student]);
 
+  // Optimistic: the test leaves the list at once and comes back if the call fails.
   async function decide(test, approved) {
     setBusy(true);
+    const before = pendingQ.data;
+    setPending((p) => p.filter((t) => t.id !== test.id));
     try {
       await api("/test/approve", {
         method: "POST",
@@ -126,10 +115,11 @@ export default function ReviewPage() {
           due_date: approved ? (dueDates[test.id] || null) : null,
         },
       });
-      setPending((p) => p.filter((t) => t.id !== test.id));
       setEditing(null);
+      toast(approved ? "Test sent to the student." : "Test rejected.");
     } catch (e) {
-      alert(e.message);
+      pendingQ.mutate(before, { revalidate: false });
+      toast(errorDetail(e) || "Couldn't save that decision — the test is back. Please try again.", "error");
     } finally {
       setBusy(false);
     }
@@ -215,7 +205,9 @@ export default function ReviewPage() {
         {genMsg && <p className="w-full text-sm muted">{genMsg}</p>}
       </form>
 
-      {loading ? (
+      {pendingQ.error && !pendingQ.data ? (
+        <ErrorState message="Couldn't load the tests waiting for review." onRetry={load} />
+      ) : loading ? (
         <div className="space-y-6">
           <SkeletonCard lines={4} />
           <SkeletonCard lines={4} />

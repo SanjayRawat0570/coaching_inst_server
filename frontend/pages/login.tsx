@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { supabase } from "../lib/supabase";
-import { api } from "../lib/api";
+import { api, errorDetail } from "../lib/api";
 import ThemeToggle from "../components/ThemeToggle";
 import {
   Mail, GraduationCap, Users, ArrowLeft,
@@ -29,7 +29,8 @@ export default function Login() {
   useEffect(() => {
     if (!router.isReady) return;
     if (router.query.mode === "signup") setMode("signup");
-  }, [router.isReady, router.query.mode]);
+    if (router.query.expired) setInfo("Your session expired — please log in again.");
+  }, [router.isReady, router.query.mode, router.query.expired]);
 
   const update = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const redirectByRole = (role) => router.replace(ROLE_HOME[role] || "/student/doubt");
@@ -83,7 +84,7 @@ export default function Login() {
         redirectByRole(data.user?.user_metadata?.role);
       }
     } catch (err) {
-      setError(err.message || "Something went wrong");
+      setError(errorDetail(err) || "Something went wrong");
     } finally {
       setBusy(false);
     }

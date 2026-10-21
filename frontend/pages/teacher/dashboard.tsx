@@ -1,14 +1,20 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-} from "recharts";
+import dynamic from "next/dynamic";
 import Shell from "../../components/Shell";
-import { EmptyState, Stat, SkeletonCard } from "../../components/ui";
+import { EmptyState, Stat, SkeletonCard, ErrorState, Skeleton } from "../../components/ui";
 import Icon from "../../components/Icon";
 import ActivityHeatmap from "../../components/ActivityHeatmap";
-import { api } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
+import { useToast } from "../../components/Toast";
+import { api, errorDetail } from "../../lib/api";
+import { useApi } from "../../lib/hooks";
+import { useAuth } from "../../lib/useAuth";
+
+// Recharts loads only for the chart, after the dashboard is on screen.
+const TrendChart = dynamic(() => import("../../components/charts/TrendChart"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-64 w-full" />,
+});
 
 function heatColor(score) {
   if (score >= 0.8) return "bg-emerald-500";
@@ -18,81 +24,58 @@ function heatColor(score) {
 }
 
 export default function TeacherDashboard() {
-  const [overview, setOverview] = useState({ heatmap: [], alerts: [], top_doubts: [] });
-  const [submissions, setSubmissions] = useState([]);
-  const [students, setStudents] = useState([]);
-  const [clusters, setClusters] = useState([]);
-  const [clustersBusy, setClustersBusy] = useState(false);
-  const [heat, setHeat] = useState({ hours: [], total: 0, days: 14 });
-  const [monthly, setMonthly] = useState([]);
+  const toast = useToast();
+  const { instituteId: instId } = useAuth();
+  const q = `institute_id=${instId}`;
+  // Independent cached requests — one failing never blanks the rest of the dashboard.
+  const overviewQ = useApi(`/teacher/overview?${q}`);
+  const submissionsQ = useApi(`/teacher/submissions?${q}`);
+  const studentsQ = useApi(`/teacher/students?${q}`);
+  const clustersQ = useApi(`/teacher/doubt-clusters?${q}`);
+  const heatQ = useApi(`/teacher/activity-heatmap?${q}`);
+  const insightsQ = useApi(`/teacher/rag-insights`);
   const [monthlyStudent, setMonthlyStudent] = useState(""); // "" = whole class
-  const [instId, setInstId] = useState("");
-  const [insights, setInsights] = useState({ content_gaps: [], answer_quality: null });
-  const [loading, setLoading] = useState(true);
+  const monthlyQ = useApi(`/teacher/monthly-scores?${q}&student_id=${monthlyStudent}`);
+  const [clustersBusy, setClustersBusy] = useState(false);
 
-  // F15: (re)load the monthly line for the class or a chosen student.
-  async function loadMonthly(studentId) {
+  const overview = overviewQ.data || { heatmap: [], alerts: [], top_doubts: [] };
+  const submissions = submissionsQ.data?.submissions || [];
+  const students = studentsQ.data?.students || [];
+  const clusters = clustersQ.data?.clusters || [];
+  const heat = heatQ.data || { hours: [], total: 0, days: 14 };
+  const monthly = monthlyQ.data?.monthly || [];
+  const insights = insightsQ.data || { content_gaps: [], answer_quality: null };
+  const loading = !overviewQ.data && !overviewQ.error;
+
+  // F15: the monthly line for the class or a chosen student (its own cached request).
+  function loadMonthly(studentId) {
     setMonthlyStudent(studentId);
-    try {
-      const res = await api(`/teacher/monthly-scores?institute_id=${instId}&student_id=${studentId}`);
-      setMonthly(res.monthly || []);
-    } catch (e) {
-      console.error("monthly scores failed", e);
-      setMonthly([]);
-    }
   }
-
-  useEffect(() => {
-    (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const institute_id = user?.user_metadata?.institute_id || "";
-      setInstId(institute_id);
-      // Independent calls — one failing must not blank the rest of the dashboard.
-      const [ov, subs, studs, cl, hm, ms, ins] = await Promise.allSettled([
-        api(`/teacher/overview?institute_id=${institute_id}`),
-        api(`/teacher/submissions?institute_id=${institute_id}`),
-        api(`/teacher/students?institute_id=${institute_id}`),
-        api(`/teacher/doubt-clusters?institute_id=${institute_id}`),
-        api(`/teacher/activity-heatmap?institute_id=${institute_id}`),
-        api(`/teacher/monthly-scores?institute_id=${institute_id}`),
-        api(`/teacher/rag-insights`),
-      ]);
-      if (ins.status === "fulfilled") setInsights(ins.value);
-      else console.error("rag insights failed", ins.reason);
-      if (ov.status === "fulfilled") setOverview(ov.value);
-      else console.error("overview failed", ov.reason);
-      if (subs.status === "fulfilled") setSubmissions(subs.value.submissions || []);
-      else console.error("submissions failed", subs.reason);
-      if (studs.status === "fulfilled") setStudents(studs.value.students || []);
-      else console.error("students failed", studs.reason);
-      if (cl.status === "fulfilled") setClusters(cl.value.clusters || []);
-      else console.error("clusters failed", cl.reason);
-      if (hm.status === "fulfilled") setHeat(hm.value);
-      else console.error("activity heatmap failed", hm.reason);
-      if (ms.status === "fulfilled") setMonthly(ms.value.monthly || []);
-      else console.error("monthly scores failed", ms.reason);
-      setLoading(false);
-    })();
-  }, []);
 
   async function rebuildClusters() {
     setClustersBusy(true);
     try {
       await api("/teacher/doubt-clusters/build", { method: "POST" });
-      const cl = await api(`/teacher/doubt-clusters?institute_id=${instId}`);
-      setClusters(cl.clusters || []);
+      await clustersQ.mutate();
+      toast("Doubt clusters updated.");
     } catch (e) {
-      console.error(e);
+      toast(errorDetail(e) || "Couldn't recompute clusters. Please try again.", "error");
     } finally {
       setClustersBusy(false);
     }
   }
 
+  // Optimistic: the alert disappears at once and comes back if the update fails.
   async function markRead(alertId) {
-    await api("/teacher/alerts/read", { method: "POST", body: { alert_id: alertId } });
-    setOverview((o) => ({ ...o, alerts: o.alerts.filter((a) => a.id !== alertId) }));
+    const before = overviewQ.data;
+    overviewQ.mutate({ ...overview, alerts: overview.alerts.filter((a) => a.id !== alertId) },
+                     { revalidate: false });
+    try {
+      await api("/teacher/alerts/read", { method: "POST", body: { alert_id: alertId } });
+    } catch (e) {
+      overviewQ.mutate(before, { revalidate: false });
+      toast("Couldn't mark that alert as read. Please try again.", "error");
+    }
   }
 
   // Content gaps have their own card below; this list is for at-risk students.
@@ -108,7 +91,9 @@ export default function TeacherDashboard() {
 
   return (
     <Shell requireRole="teacher" title="Class Dashboard" subtitle="Live overview of your class">
-      {loading ? (
+      {overviewQ.error && !overviewQ.data ? (
+        <ErrorState message="Couldn't load the class overview." onRetry={() => overviewQ.mutate()} />
+      ) : loading ? (
         <div className="space-y-6">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <SkeletonCard lines={1} />
@@ -267,18 +252,8 @@ export default function TeacherDashboard() {
                 hint="Once graded tests exist, average scores per month appear here."
               />
             ) : (
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={monthly} margin={{ left: -10, right: 10, top: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: "#94a3b8" }} />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: "#94a3b8" }} />
-                  <Tooltip
-                    contentStyle={{ background: "#0b1120", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, color: "#e2e8f0" }}
-                    formatter={(v) => [`${v}%`, monthlyStudent ? "Score" : "Avg score"]}
-                  />
-                  <Line type="monotone" dataKey="avg_pct" stroke="#4f46e5" strokeWidth={2.5} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                </LineChart>
-              </ResponsiveContainer>
+              <TrendChart data={monthly} xKey="month" yKey="avg_pct" percent
+                          label={monthlyStudent ? "Score" : "Avg score"} />
             )}
           </section>
 

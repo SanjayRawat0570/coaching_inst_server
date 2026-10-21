@@ -89,3 +89,18 @@ export function Stat({ icon, label, value, accent = "grad-text", sub }: any) {
     </div>
   );
 }
+
+// Shown when a request failed: what happened, plus a Retry button (no dead ends).
+export function ErrorState({ message = "Couldn't load this.", onRetry, compact = false }: any) {
+  return (
+    <div role="alert" className={`card ${compact ? "p-4" : "p-6"} text-center`}>
+      <p className="font-semibold">{message}</p>
+      <p className="muted text-sm mt-1">Check your connection and try again.</p>
+      {onRetry && (
+        <button className="btn-ghost mt-3" onClick={() => onRetry()}>
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
