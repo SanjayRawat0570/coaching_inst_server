@@ -81,7 +81,7 @@ def reviewer_node(state: CoachingState) -> CoachingState:
             f"Cited questions: {json.dumps(grounded, ensure_ascii=False)}\n"
             if grounded else ""
         )
-        llm = get_llm()
+        llm = get_llm(fast=True)
         verdict = llm.invoke(
             "You are a JEE/NEET exam committee reviewer. Check these questions for "
             f"{criteria}.\n"

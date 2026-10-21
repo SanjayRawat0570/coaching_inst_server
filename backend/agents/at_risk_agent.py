@@ -75,7 +75,7 @@ def assess_student(student: dict) -> dict:
 
     milestones = get_milestones_text(student["id"])
     try:
-        message = get_llm(temperature=0.6).invoke(
+        message = get_llm(temperature=0.6, fast=True).invoke(
             f"A student named {student.get('name', 'the student')} is at risk of "
             f"disengaging (risk {risk}/100). Signals: {signals}.\n"
             f"Past wins to reference for motivation:\n{milestones or '(none yet)'}\n"

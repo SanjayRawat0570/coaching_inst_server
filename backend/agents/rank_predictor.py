@@ -90,7 +90,7 @@ def rank_predictor_node(state: CoachingState) -> CoachingState:
         target_exam = _target_exam(sb, state["student_id"])
         cutoff_context = _format_rows(cutoff_rows(sb, target_exam, pct))
 
-        llm = get_llm()
+        llm = get_llm(fast=True)
         raw = llm.invoke(
             f"Estimate an All India Rank band for a {target_exam} aspirant.\n"
             f"Latest test: {score}/{total} ({pct}%). Treat this % as their likely % in the real exam.\n"

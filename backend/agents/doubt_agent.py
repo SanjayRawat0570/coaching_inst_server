@@ -233,8 +233,10 @@ async def _socratic(student_id, question, conversation_history, conversation_id,
     from memory.working import format_for_prompt
 
     yield "status", "Searching your notes…"
-    chunks = await rag_server_client.search(question, top_k=5, tenant=tenant, api_key=api_key)
-    memories = await asyncio.to_thread(_memories, student_id, question)
+    # Independent lookups: the institute's material and the student's past doubts.
+    chunks, memories = await asyncio.gather(
+        rag_server_client.search(question, top_k=5, tenant=tenant, api_key=api_key),
+        asyncio.to_thread(_memories, student_id, question))
     prompt = _socratic_prompt(question, rag_server_client.format_context(chunks), memories,
                               format_for_prompt(conversation_history or []))
 

@@ -197,3 +197,25 @@ Concept map on real data (6 weak concepts): 18 → 3 Supabase calls, 787 → 127
 identical results. Weekly summary for 5 students: 25 → 4 queries, 1221 → 196 ms,
 identical values. Test submit: weakness_map 2 queries per concept → 2 in total.
 Flashcard reminder job: 1 + 1 per student → 1 paged read + 1 per 200 due students.
+
+## Phase 3 results (2026-10-22)
+
+Measured with real LLMs from the dev machine.
+
+| What | Before | After |
+|---|---|---|
+| Grade 3 theory answers (Groq qwen/qwen3.8-27b) | 3450 ms one at a time | 1500 ms side by side (same marks) |
+| /test/submit post-test agents (rank, progress, flashcards) | sum of the three | the slowest one (test: 3 x 0.2 s -> < 0.5 s) |
+| Weak concepts' prerequisite links (1 LLM call each) | one after another | 3 at a time |
+| Class test generation (1 LLM call per student) | one after another | 3 at a time |
+| Slow endpoints with ?job=1 | request held open for the whole LLM work | returns {job_id} at once; GET /jobs/{id} |
+| /doubt/stream first byte | after the first RAG / LLM step | a [STATUS] at once (test: < 0.25 s while the answer takes 0.3 s+) |
+
+Short-task model choice (cluster label, median of 3): Groq qwen/qwen3.8-27b 111 ms,
+openai/gpt-oss-120b 286 ms, openai/gpt-oss-20b 606 ms, Gemini 2.5 Flash 2852 ms.
+A max_tokens cap was tried and dropped: it saved ~0–90 ms and made the gpt-oss models
+return empty answers (they spend the budget on reasoning).
+
+Provider status on 2026-10-22: Groq's default `llama-3.3-70b-versatile` returns 404;
+Gemini free tier allows 5 requests/min for gemini-2.5-flash; OpenRouter's
+`meta-llama/llama-3.3-70b-instruct:free` is no longer free (404).

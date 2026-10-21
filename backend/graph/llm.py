@@ -55,14 +55,22 @@ def _construct(cls, timeout: float, **kwargs):
     try:
         return cls(timeout=timeout, max_retries=1, **kwargs)
     except (TypeError, ValueError) as e:
+        client = cls(**kwargs)  # raises again if the problem is something else (e.g. no key)
         log.warning("%s rejected timeout/max_retries (%s); using its defaults", cls.__name__, e)
-        return cls(**kwargs)
+        return client
 
 
-def _build(name: str, temperature: float, timeout: float):
+def _groq_model(fast: bool) -> str:
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    return (os.getenv("GROQ_FAST_MODEL") or model) if fast else model
+
+
+def _build(name: str, temperature: float, timeout: float, fast: bool = False):
+    # No max_tokens cap: measured, it saved no time, and reasoning models (gpt-oss,
+    # Gemini 2.5) spend the budget on hidden thinking and return an empty answer.
     if name == "groq":
         from langchain_groq import ChatGroq
-        return _construct(ChatGroq, timeout, model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        return _construct(ChatGroq, timeout, model=_groq_model(fast),
                           api_key=os.getenv("GROQ_API_KEY"), temperature=temperature)
     if name == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -78,22 +86,24 @@ class FailoverLLM:
     """invoke / ainvoke / stream / astream across the providers, in order."""
 
     def __init__(self, temperature: float = 0.1, timeout: float | None = None,
-                 providers: tuple[str, ...] = PROVIDERS, builder=_build):
+                 providers: tuple[str, ...] = PROVIDERS, builder=_build, fast: bool = False):
         self.temperature = temperature
         self.timeout = timeout or _timeout()
         self.providers = providers
         self._builder = builder
+        self._extra = {"fast": True} if fast else {}
         self._clients: dict[str, object] = {}
 
     def _client(self, name: str):
         if name not in self._clients:
-            self._clients[name] = self._builder(name, self.temperature, self.timeout)
+            self._clients[name] = self._builder(name, self.temperature, self.timeout, **self._extra)
         return self._clients[name]
 
     def _order(self) -> list[str]:
-        """Closed circuits first; if every provider is cooling down, try them all."""
+        """Providers whose circuit is closed first, then the ones cooling down as a
+        last resort (skipping them outright could leave no provider that answers)."""
         closed = [p for p in self.providers if not _is_open(p)]
-        return closed or list(self.providers)
+        return closed + [p for p in self.providers if p not in closed]
 
     def _candidates(self):
         for name in self._order():
@@ -171,12 +181,15 @@ class FailoverLLM:
         raise last or RuntimeError("No LLM provider is configured")
 
 
-def get_llm(temperature: float = 0.1, timeout: float | None = None) -> FailoverLLM:
+def get_llm(temperature: float = 0.1, timeout: float | None = None,
+            fast: bool = False) -> FailoverLLM:
     """Primary Groq, fallback Gemini, third fallback OpenRouter. All free tiers.
 
     timeout: seconds per provider before failing over (default LLM_TIMEOUT / 20 s).
+    fast: for short answers (labels, checks, one-liners) — Groq uses GROQ_FAST_MODEL
+    (default: GROQ_MODEL).
     """
-    return FailoverLLM(temperature=temperature, timeout=timeout)
+    return FailoverLLM(temperature=temperature, timeout=timeout, fast=fast)
 
 
 def get_vision_llm():

@@ -11,7 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, File, Form, UploadFile
+from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -21,6 +21,8 @@ load_dotenv()
 
 from auth.supabase_auth import get_current_user, require_role, get_supabase  # noqa: E402
 import cache  # noqa: E402
+import jobs  # noqa: E402
+import ratelimit  # noqa: E402
 
 # Seconds the heavy read endpoints are cached per institute / student (cache.py).
 # The writes that change them invalidate the entry; the TTL covers the rest.
@@ -72,6 +74,7 @@ async def lifespan(app: FastAPI):
         shutdown_scheduler()
     except Exception:
         pass
+    jobs.shutdown()
     from rag import rag_server_client
     await rag_server_client.aclose()
 
@@ -279,6 +282,7 @@ def signup(req: SignupRequest):
 @app.post("/doubt")
 def doubt(req: DoubtRequest, background: BackgroundTasks, user=Depends(get_current_user)):
     from agents.doubt_agent import answer_doubt, after_doubt
+    _rate_limit("doubt", user)
     student_id = _resolve_student_id(user)
     institute_id = _caller_institute_id(user)
     # Answer + write the doubt_logs row now (its id is the doubt_id); defer
@@ -319,11 +323,19 @@ async def doubt_stream(req: DoubtRequest, user=Depends(get_current_user)):
     from starlette.concurrency import run_in_threadpool
     from agents.doubt_agent import run_doubt, persist_doubt, after_doubt, BUSY_MESSAGE
 
+    if not ratelimit.allow("doubt", user.get("id")):
+        # The stream client only understands SSE, so the limit is a friendly [ERROR].
+        async def slow_down():
+            yield _sse(f"[ERROR]{ratelimit.message('doubt')}")
+            yield _sse("[DONE]")
+        return StreamingResponse(slow_down(), media_type="text/event-stream")
+
     student_id = await run_in_threadpool(_resolve_student_id, user)
     institute_id = await run_in_threadpool(_caller_institute_id, user)
     background = BackgroundTasks()  # runs after the stream has been sent
 
     async def generate():
+        yield _sse("[STATUS]Reading your question…")  # first byte goes out at once
         try:
             async for kind, data in run_doubt(
                     student_id=student_id, institute_id=institute_id, question=req.question,
@@ -390,8 +402,20 @@ def doubt_feedback(req: DoubtFeedbackRequest, background: BackgroundTasks,
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 @app.post("/test/generate")
-def generate_test(req: GenerateTestRequest, user=Depends(require_role("teacher", "admin"))):
-    """Generate a personalized test and publish it straight to the student (status 'ready')."""
+def generate_test(req: GenerateTestRequest, job: bool = Query(False),
+                  user=Depends(require_role("teacher", "admin"))):
+    """Generate a personalized test and save it as 'pending' for teacher review.
+
+    ?job=1 returns {job_id} at once and generates in the background (GET /jobs/{id}).
+    """
+    _rate_limit("test_gen", user)
+    if job:
+        return jobs.submit("test_generate", user["id"], _generate_test, req,
+                           institute_id=_as_uuid(req.institute_id))
+    return _generate_test(req)
+
+
+def _generate_test(req: GenerateTestRequest) -> dict:
     from agents.test_generator import test_generator_node
     from agents.reviewer_agent import reviewer_node, should_continue, MAX_ITERATIONS
 
@@ -483,11 +507,25 @@ def approve_test(req: ApproveTestRequest, user=Depends(require_role("teacher", "
 
 
 @app.post("/test/submit")
-def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
+def submit_test(req: SubmitTestRequest, background: BackgroundTasks, job: bool = Query(False),
                 user=Depends(get_current_user)):
-    """Student submits answers -> evaluate -> progress/rank/flashcards (post-test flow)."""
-    from agents.answer_evaluator import evaluator_node
+    """Student submits answers -> evaluate -> progress/rank/flashcards (post-test flow).
+
+    ?job=1 returns {job_id} at once and grades in the background (GET /jobs/{id}).
+    """
     student_id = _resolve_student_id(user)
+    if job:
+        return jobs.submit("test_submit", user["id"], _submit_test, req, user, student_id,
+                           award_now=True, institute_id=_caller_institute_id(user))
+    result = _submit_test(req, user, student_id)
+    background.add_task(_award_activity, student_id, "test")
+    return result
+
+
+def _submit_test(req: SubmitTestRequest, user: dict, student_id: str,
+                 award_now: bool = False) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
+    from agents.answer_evaluator import evaluator_node
     sb = get_supabase()
     sb.table("tests").update({"answers": req.answers}).eq("id", req.test_id).execute()
 
@@ -507,31 +545,32 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
     ev = evaluator_node(base_state)
     evaluation = ev.get("evaluation_result")
 
-    # 2) Run the post-test agents (progress / rank / flashcards) best-effort. Each is
-    #    isolated so one failing never hides the result the student just earned.
+    # 2) Run the post-test agents (progress / rank / flashcards) best-effort and side
+    #    by side — none reads another's output (the graph fans them out the same way).
+    #    Each is isolated so one failing never hides the result the student just earned.
+    from agents.flashcard_agent import flashcard_gen_node
+    from agents.progress_tracker import progress_tracker_node
+    from agents.rank_predictor import rank_predictor_node
     post_state = {**base_state, **ev}
-    result = {}
-    try:
-        from agents.rank_predictor import rank_predictor_node
-        r = rank_predictor_node(post_state) or {}
-        result["air_rank"] = r.get("air_rank")
-        result["air_rank_context"] = r.get("air_rank_context")
-        post_state = {**post_state, **r}
-    except Exception as e:
-        print(f"[submit] rank prediction failed: {e}")
-    try:
-        from agents.progress_tracker import progress_tracker_node
-        p = progress_tracker_node(post_state) or {}
-        result["weakness_update"] = p.get("weakness_update")
-    except Exception as e:
-        print(f"[submit] progress update failed: {e}")
-    try:
-        from agents.flashcard_agent import flashcard_gen_node
-        flashcard_gen_node(post_state)  # side effects only
-    except Exception as e:
-        print(f"[submit] flashcard generation failed: {e}")
 
-    background.add_task(_award_activity, student_id, "test")
+    def safe(name, node):
+        try:
+            return node(dict(post_state)) or {}
+        except Exception as e:
+            print(f"[submit] {name} failed: {e}")
+            return {}
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_rank = pool.submit(safe, "rank prediction", rank_predictor_node)
+        f_prog = pool.submit(safe, "progress update", progress_tracker_node)
+        f_flash = pool.submit(safe, "flashcard generation", flashcard_gen_node)  # side effects only
+        r, prog = f_rank.result(), f_prog.result()
+        f_flash.result()
+    result = {"air_rank": r.get("air_rank"), "air_rank_context": r.get("air_rank_context"),
+              "weakness_update": prog.get("weakness_update")}
+
+    if award_now:  # background job: no response to attach a BackgroundTask to
+        _award_activity(student_id, "test")
     cache.invalidate_student(student_id)  # weakness map changed -> concept map
 
     # 3) Return the authoritative numbers from the DB row (evaluator wrote them).
@@ -554,9 +593,28 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
 
 
 @app.post("/answer/evaluate")
-def evaluate_handwritten(req: EvaluateHandwrittenRequest, user=Depends(get_current_user)):
+def evaluate_handwritten(req: EvaluateHandwrittenRequest, job: bool = Query(False),
+                         user=Depends(get_current_user)):
+    """Grade a photo of a handwritten answer. ?job=1 runs it in the background."""
     from agents.answer_evaluator import evaluate_handwritten as grade
+    if job:
+        return jobs.submit("answer_evaluate", user["id"], grade, req.image_b64,
+                           req.question, req.model_answer)
     return grade(req.image_b64, req.question, req.model_answer)
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str, user=Depends(get_current_user)):
+    """Status of a background job you started: queued | running | done | failed."""
+    found = jobs.get(job_id, user["id"])
+    if not found:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return found
+
+
+def _rate_limit(action: str, user: dict) -> None:
+    if not ratelimit.allow(action, user.get("id")):
+        raise HTTPException(status_code=429, detail=ratelimit.message(action))
 
 
 # ── Progress / flashcards ─────────────────────────────────────────────────────
@@ -665,8 +723,8 @@ def build_concept_map(user=Depends(get_current_user)):
     sid = _resolve_student_id(user)
     weak = (sb.table("weakness_map").select("subject, concept, score")
             .eq("student_id", sid).order("score", desc=False).limit(6).execute()).data or []
-    for w in weak:
-        link_prerequisites(w["concept"], subject=w.get("subject"))
+    from concurrency import parallel_map
+    parallel_map(lambda w: link_prerequisites(w["concept"], subject=w.get("subject")), weak)
     prereqs = prerequisites_of_many([w["concept"] for w in weak])
     nodes = [{"concept": w["concept"], "subject": w.get("subject"),
               "score": w.get("score"), "prerequisites": prereqs.get(w["concept"], [])}
@@ -728,6 +786,7 @@ def _grade_mcq(questions: list, answers: list) -> tuple:
 def create_challenge(req: CreateChallengeRequest, user=Depends(get_current_user)):
     """F12: challenge a classmate — generates one shared MCQ test for both to take."""
     from agents.test_generator import test_generator_node
+    _rate_limit("test_gen", user)
     sb = get_supabase()
     me = _resolve_student_id(user)
     opp = (sb.table("students").select("id, institute_id")
@@ -972,17 +1031,29 @@ def teacher_students(institute_id: str = "", user=Depends(require_role("teacher"
 
 # ── F13: generate one personalized test per student in a class ─────────────────
 @app.post("/teacher/tests/generate-class")
-def generate_class_tests(req: GenerateClassTestRequest, user=Depends(require_role("teacher", "admin"))):
-    """F13: loop the class and generate a weakness-targeted test for each student."""
+def generate_class_tests(req: GenerateClassTestRequest, job: bool = Query(False),
+                         user=Depends(require_role("teacher", "admin"))):
+    """F13: generate a weakness-targeted test for each student of the class.
+
+    ?job=1 returns {job_id} at once and works in the background (GET /jobs/{id}).
+    """
+    _rate_limit("test_gen", user)
+    if job:
+        return jobs.submit("class_generate", user["id"], _generate_class_tests, req,
+                           institute_id=_as_uuid(req.institute_id))
+    return _generate_class_tests(req)
+
+
+def _generate_class_tests(req: GenerateClassTestRequest) -> dict:
     from agents.test_generator import test_generator_node
+    from concurrency import parallel_map
     sb = get_supabase()
     inst = _as_uuid(req.institute_id)
     q = sb.table("students").select("id, name, email, institute_id")
     q = q.eq("institute_id", inst) if inst else q.is_("institute_id", "null")
     students = q.limit(100).execute().data or []
 
-    results = []
-    for s in students:
+    def one(s):
         label = s.get("name") or s.get("email") or s["id"]
         try:
             state = {"student_id": s["id"], "institute_id": s.get("institute_id") or "",
@@ -991,16 +1062,18 @@ def generate_class_tests(req: GenerateClassTestRequest, user=Depends(require_rol
             state = test_generator_node(state, num_questions=req.num_questions)
             qs = state.get("test_questions") or []
             if not qs:
-                results.append({"student": label, "ok": False, "reason": "no questions generated"})
-                continue
+                return {"student": label, "ok": False, "reason": "no questions generated"}
             sb.table("tests").insert({
                 "student_id": s["id"], "institute_id": _as_uuid(s.get("institute_id")),
                 "subject": req.subject, "questions": qs,
                 "status": "pending", "teacher_approved": False,
             }).execute()
-            results.append({"student": label, "ok": True, "questions": len(qs)})
+            return {"student": label, "ok": True, "questions": len(qs)}
         except Exception as e:
-            results.append({"student": label, "ok": False, "reason": str(e)})
+            return {"student": label, "ok": False, "reason": str(e)}
+
+    # One LLM call per student, a few at a time (LLM_CONCURRENCY), in roster order.
+    results = parallel_map(one, students)
 
     return {"students": len(students),
             "generated": sum(1 for r in results if r["ok"]), "results": results}

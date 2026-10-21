@@ -110,6 +110,15 @@ def test_all_circuits_open_still_tries_everyone():
     assert _llm([groq, gemini]).invoke("hi").content == "gemini"
 
 
+def test_cooling_provider_is_still_tried_last():
+    # groq is cooling down after a 404; gemini now fails too -> groq gets a last try.
+    groq, gemini = _Provider("groq", fail=True), _Provider("gemini")
+    _llm([groq, gemini]).invoke("hi")
+    groq.fail, gemini.fail = False, True
+    assert _llm([groq, gemini]).invoke("hi").content == "groq"
+    assert groq.calls == 2 and gemini.calls == 2
+
+
 def test_unbuildable_provider_is_skipped():
     gemini = _Provider("gemini")
 

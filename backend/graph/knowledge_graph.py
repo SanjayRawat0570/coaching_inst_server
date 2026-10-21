@@ -13,6 +13,8 @@ Everything fails soft so an agent never crashes if the graph is unavailable.
 """
 
 
+import threading
+
 from rag.embedder import embed
 
 
@@ -26,9 +28,28 @@ def _vec_literal(vector: list[float]) -> str:
     return "[" + ",".join(str(x) for x in vector) + "]"
 
 
+_name_locks: dict[str, threading.Lock] = {}
+_name_locks_guard = threading.Lock()
+
+
+def _lock_for(name: str) -> threading.Lock:
+    with _name_locks_guard:
+        return _name_locks.setdefault(name.strip().lower(), threading.Lock())
+
+
 def ensure_concept(name: str, subject: str = None, chapter: str = None,
                    description: str = None) -> str | None:
-    """Upsert a concept node; returns its id. Embeds name+description."""
+    """Upsert a concept node; returns its id. Embeds name+description.
+
+    Serialised per name: link_prerequisites runs in parallel for several weak
+    concepts, and two of them often share a prerequisite — without the lock both
+    would see "missing" and insert it twice.
+    """
+    with _lock_for(name):
+        return _ensure_concept(name, subject, chapter, description)
+
+
+def _ensure_concept(name, subject, chapter, description) -> str | None:
     try:
         sb = _supabase()
         existing = (sb.table("concepts").select("id")
@@ -79,7 +100,7 @@ def link_prerequisites(concept: str, subject: str = None) -> list[str]:
         if not target_id:
             return []
 
-        raw = get_llm().invoke(
+        raw = get_llm(fast=True).invoke(
             f"List 2-4 prerequisite concepts a JEE/NEET student must understand "
             f"before '{concept}'"
             f"{' in ' + subject if subject else ''}. "

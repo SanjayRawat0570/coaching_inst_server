@@ -32,7 +32,7 @@ def _label_for(questions: list[str]) -> str:
     rep = min(questions, key=len)
     try:
         from graph.llm import get_llm
-        out = get_llm(temperature=0).invoke(
+        out = get_llm(temperature=0, fast=True).invoke(
             "Give a 3-6 word topic label for this group of student doubts. "
             "Reply with ONLY the label.\n- " + "\n- ".join(questions[:6])
         ).content.strip().strip('"')

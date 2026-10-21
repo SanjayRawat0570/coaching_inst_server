@@ -24,11 +24,13 @@ def fresh_process_state():
     """Shared clients / caches are per process; give every test a clean slate so
     one test's fakes never leak into the next."""
     import cache
+    import ratelimit
     from rag import rag_server_client
     from graph import llm
     rag_server_client.reset_clients()
     llm.reset_circuits()
     cache.clear()
+    ratelimit.reset()
     if "main" in sys.modules:
         sys.modules["main"]._student_cache.clear()
     yield

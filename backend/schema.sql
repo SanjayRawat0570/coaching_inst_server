@@ -389,3 +389,19 @@ CREATE TABLE IF NOT EXISTS institute_secrets (
 );
 ALTER TABLE institute_secrets ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON institute_secrets FROM anon, authenticated;
+
+-- ── Background jobs (Performance Phase 3, migrations/2026-10-22_jobs.sql) ──────
+CREATE TABLE IF NOT EXISTS jobs (
+  id           UUID PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'queued'
+               CHECK (status IN ('queued', 'running', 'done', 'failed')),
+  owner_id     UUID NOT NULL,
+  institute_id UUID,
+  result       JSONB,
+  error        TEXT,
+  created_at   TIMESTAMPTZ DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS jobs_owner_created_idx ON jobs (owner_id, created_at DESC);
+ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;

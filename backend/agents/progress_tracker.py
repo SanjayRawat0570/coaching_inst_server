@@ -67,16 +67,20 @@ def progress_tracker_node(state: CoachingState) -> CoachingState:
             ratios[concept] = stats.get("correct", 0) / total  # 0..1 mastery signal
         new_state = _update_concepts(sb, student_id, subject, ratios)
 
-        updates = []
-        for concept, ratio in ratios.items():
-            update = new_state[concept]
-
-            # Knowledge graph: register the concept node; for weak concepts also
-            # infer + wire prerequisite edges (recommend what to fix first).
+        # Knowledge graph: register every concept node; for weak concepts also infer
+        # + wire prerequisite edges (one LLM call each, run side by side).
+        from concurrency import parallel_map
+        for concept in ratios:
             ensure_concept(concept, subject=subject)
-            if ratio < 0.5:
-                update["prerequisites"] = link_prerequisites(concept, subject=subject)
+        weak = [c for c, r in ratios.items() if r < 0.5]
+        prereqs = dict(zip(weak, parallel_map(
+            lambda c: link_prerequisites(c, subject=subject), weak)))
 
+        updates = []
+        for concept in ratios:
+            update = new_state[concept]
+            if concept in prereqs:
+                update["prerequisites"] = prereqs[concept]
             updates.append(update)
             if update["crossed_mastery"]:
                 record_milestone(

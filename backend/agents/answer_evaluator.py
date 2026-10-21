@@ -136,6 +136,17 @@ def score_test(questions: list[dict], answers: list, institute_id: str | None = 
     found = _retrieve_for([questions[i].get("question", "") for i in answered], institute_id) \
         if answered else []
     material = dict(zip(answered, found))
+
+    # LLM-grade every answered theory question side by side (a few at a time);
+    # unanswered ones need no LLM call. The loop below then assembles in order.
+    from concurrency import parallel_map
+    graded_by_index = dict(zip(answered, parallel_map(
+        lambda i: grade_text_answer(questions[i].get("question", ""),
+                                    questions[i].get("model_answer", ""), answers[i],
+                                    _num(questions[i].get("marks"), 5),
+                                    grounding=material.get(i, [])),
+        answered)))
+
     for i, q in enumerate(questions):
         concept = q.get("concept", "unknown")
         per_concept.setdefault(concept, {"correct": 0, "total": 0})
@@ -145,9 +156,9 @@ def score_test(questions: list[dict], answers: list, institute_id: str | None = 
         if _is_theory(q):
             marks = _num(q.get("marks"), 5)
             total += marks
-            graded = grade_text_answer(q.get("question", ""), q.get("model_answer", ""),
-                                       given if isinstance(given, str) else "", marks,
-                                       grounding=material.get(i, []))
+            graded = graded_by_index.get(i) or grade_text_answer(
+                q.get("question", ""), q.get("model_answer", ""),
+                given if isinstance(given, str) else "", marks, grounding=material.get(i, []))
             awarded = graded["marks_awarded"]
             score += awarded
             # Count as "correct" for the concept if at least half marks were earned.

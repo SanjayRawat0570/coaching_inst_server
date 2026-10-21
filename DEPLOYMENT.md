@@ -35,6 +35,7 @@ Run these files from [`backend/migrations/`](backend/migrations/) in the SQL edi
 | 5 | `2026-10-18_remove_old_rag.sql` | `student_memories` (pgvector long-term memory, replaces Qdrant) |
 | 6 | `2026-10-18_insights.sql` | `doubt_clusters.source` (each hot topic's top RAG_SERVER source) |
 | 7 | `2026-10-22_performance_indexes.sql` | Indexes for the dashboard / leaderboard / parent-report queries (adds indexes only, changes no data) |
+| 8 | `2026-10-22_jobs.sql` | `jobs` table for background test generation / grading (until it exists, jobs live in memory) |
 
 ### Storage bucket
 The app stores teachers' original study-material files in a **private** bucket named
@@ -94,6 +95,11 @@ binds uvicorn to Railway's `$PORT` (falls back to 8000).
    GROQ_MODEL=llama-3.3-70b-versatile
    GEMINI_MODEL=gemini-2.5-flash
    OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+   GROQ_FAST_MODEL=        # model for short tasks (labels, checks); empty = GROQ_MODEL
+   LLM_CONCURRENCY=3       # LLM calls run side by side at most (free-tier rate limits)
+   JOB_WORKERS=2           # background jobs (?job=1) running at once
+   RATE_LIMIT_DOUBT=8/60   # doubts per student per 60 s
+   RATE_LIMIT_TEST_GEN=5/60  # test generations per user per 60 s
    WARM_START=1            # load the embedding model in the background at boot
    SCHEDULER_ENABLED=1     # 0 = don't run the scheduled jobs in this instance
    ```
