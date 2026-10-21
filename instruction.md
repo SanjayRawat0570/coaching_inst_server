@@ -31,7 +31,7 @@ AI coaching platform for JEE / NEET institutes. Four roles, each with its own da
 - Pick a role on signup (student adds parent's email). Each role lands on its own dashboard and sees only its own data.
 
 **Doubt**
-- Student types/speaks/photos a question → AI retrieves relevant notes → streams an answer → saved to history.
+- Student types/speaks/photos a question → RAG_SERVER finds the institute's notes → streams a cited answer (Markdown + maths) → saved to history.
 
 **Test (end-to-end)**
 1. Teacher generates a test for a student by **email** (MCQ or theory).
@@ -48,7 +48,7 @@ AI coaching platform for JEE / NEET institutes. Four roles, each with its own da
 
 ## Run it
 ```bash
-# backend/ — needs keys in .env (Supabase, Qdrant, Groq/Gemini/OpenRouter)
+# backend/ — needs keys in .env (Supabase, RAG_SERVER, Groq/Gemini/OpenRouter, Resend)
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 # frontend/

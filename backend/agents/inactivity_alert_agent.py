@@ -10,7 +10,7 @@ hard, explainable rule the spec asks for, and it actually sends the emails.
 """
 
 import os
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone, date
 
 INACTIVE_DAYS = int(os.getenv("INACTIVE_ALERT_DAYS", "3"))
 

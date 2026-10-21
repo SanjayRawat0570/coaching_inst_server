@@ -18,7 +18,7 @@ no vector store or retriever of its own.
 |-------|--------|
 | API | FastAPI + Uvicorn (SSE streaming for doubts) |
 | Orchestration | LangGraph (supervisor + worker, parallel fan-out, HITL, checkpointer) |
-| LLMs | Groq `llama-3.3-70b` → Gemini `2.5-flash` → OpenRouter (fallback chain) |
+| LLMs | Groq → Gemini `2.5-flash` → OpenRouter, failing over per call ([graph/llm.py](graph/llm.py): 20 s timeout per provider, a provider that fails is tried last for 60 s). Models: `GROQ_MODEL`, `GROQ_FAST_MODEL` (short tasks), `GEMINI_MODEL`, `OPENROUTER_MODEL` |
 | Vision | Gemini `2.5-flash` (handwriting + question photos) |
 | Auth + DB + files | Supabase (Postgres + Auth + RLS + Storage for uploaded study material) |
 | RAG | **RAG_SERVER** (hybrid dense + BM25 search, grounded answers with citations, semantic cache, conversation memory) via [rag/rag_server_client.py](rag/rag_server_client.py) |
@@ -210,14 +210,22 @@ CrossEncoder rerank, `lru_cache`), and the `qdrant-client`, `langchain-community
 
 | Area | Endpoints |
 |------|-----------|
-| Auth/health | `GET /health` · `POST /auth/signup` |
+| Auth/health | `GET /health` (instant, for Railway) · `GET /ready` (Supabase, RAG_SERVER, model loaded; 503 until ready) · `POST /auth/signup` |
 | Doubts | `POST /doubt` · `POST /doubt/stream` (SSE) · `POST /doubt/feedback` |
-| Tests | `POST /test/generate` · `POST /test/approve` · `POST /test/submit` · `POST /answer/evaluate` |
+| Tests | `POST /test/generate` · `POST /test/approve` · `POST /test/submit` · `POST /answer/evaluate` — the slow ones take `?job=1` and return `{job_id}` at once |
+| Background jobs | `GET /jobs/{id}` → `{status: queued·running·done·failed, result, error}` (only the user who started it; [jobs.py](jobs.py)) |
 | Student | `GET /progress` · `POST /activity/ping` · `GET /flashcards/due` · `POST /flashcards/review` · `GET/POST /student/plan…` · `GET/POST /student/concept-map…` · `GET /leaderboard` · `GET /badges` · challenges |
 | Teacher | `GET /teacher/overview` · `/teacher/alerts` · `/teacher/students` · `/teacher/submissions` · `/teacher/tests/pending` · `POST /teacher/tests/generate-class` · `/teacher/doubt-clusters` · `/teacher/activity-heatmap` · `GET /teacher/rag-insights` |
 | Study material | `POST /teacher/materials/upload` · `GET /teacher/materials` · `POST /teacher/materials/{id}/reindex` · `DELETE /teacher/materials/{id}` · `POST /admin/materials/reindex-all` |
 | Parent | `GET /parent/report` · `POST /parent/goal` · `POST /parent/report/send` · `/parent/activity-heatmap` |
-| Admin | `GET /admin/analytics` · `GET /admin/audit-logs` · `GET /admin/rag/health` · `GET /admin/rag/usage` |
+| Admin | `GET /admin/analytics` · `GET /admin/audit-logs` (`limit`/`offset`) · `GET /admin/rag/health` · `GET /admin/rag/usage` · `GET /admin/system-health` |
+
+Lists take `limit`/`offset` where they can grow (`/teacher/alerts`, `/teacher/submissions`,
+`/admin/audit-logs`). Doubts (8/min per student) and test generation (5/min per user) are
+rate-limited ([ratelimit.py](ratelimit.py)): a 429 with a friendly `detail`, or a friendly
+`[ERROR]` on the stream. Heavy reads are cached per institute / role for 30–120 s
+([cache.py](cache.py)) and cleared by the writes that change them. Every request is logged
+once with an `X-Request-ID` ([observability.py](observability.py)).
 
 **Doubt stream format** (`POST /doubt/stream`, body adds optional `conversation_id`,
 `new_conversation`): `data: <token>` · `data: [STATUS]<text>` · `data: [ERROR]<friendly
@@ -232,7 +240,12 @@ caller — a request-body `institute_id` is ignored for RAG.
 
 ## Scheduled automation ([scheduler/jobs.py](scheduler/jobs.py))
 
-Started on app boot via the FastAPI `lifespan` handler (timezone `Asia/Kolkata`):
+Started on app boot via the FastAPI `lifespan` handler (timezone `Asia/Kolkata`;
+`SCHEDULER_ENABLED=0` turns it off). Each job takes a lock first
+([scheduler/locks.py](scheduler/locks.py): Postgres advisory lock, or a file lock), so with
+several workers or replicas it still runs once; students are processed in batches, a few
+at a time; each run's duration and outcome is logged and shown on the admin System health
+card:
 
 | When | Job |
 |------|-----|
@@ -241,7 +254,7 @@ Started on app boot via the FastAPI `lifespan` handler (timezone `Asia/Kolkata`)
 | Nightly 02:00 | `doubt_cluster_agent.run_nightly` — cluster similar doubts |
 | Sunday 20:00 | `parent_report_agent.run_weekly` — email reports |
 | Monday 07:00 | `study_plan_agent.run_weekly` — rebuild timetables |
-| Every 5 min | flashcard due-reminder checker |
+| Every 5 min (cron `*/5`) | flashcard due-reminder checker |
 
 ---
 
@@ -289,6 +302,8 @@ accounts with no institute) the `RAG_SERVER_TENANT` / `RAG_SERVER_API_KEY` env d
 | `python -m scripts.import_nta_cutoffs <file.csv> [--dry-run]` | Load marks/percentile → AIR rows for the rank predictor (columns: [scripts/nta_cutoffs_template.csv](scripts/nta_cutoffs_template.csv)) |
 | `python -m rag.ingest --file notes.pdf --material-type notes --subject Physics` | Upload one file as study material |
 | `python -m rag.transcribe --media lecture.mp4 --subject Physics --chapter "Rotation"` | Whisper transcript (timestamped) → study material `lecture` |
+| `python -m scripts.bench --runs 10 [--no-cache] [--include-writes] [--truststore]` | p50/p95 per hot endpoint and outbound calls per request (in-process as real accounts, or `--base-url` + tokens) |
+| `python -m scripts.loadtest --users 50 --seconds 30 [--truststore]` | N concurrent students; p50/p95 and error rate. `--doubts` only against a local RAG_SERVER copy |
 
 ---
 
@@ -304,6 +319,10 @@ RAG_SERVER_API_KEY / RAG_SERVER_TENANT                # default tenant + member 
 RAG_SERVER_TIMEOUT                                    # seconds per request (default 30)
 RESEND_API_KEY                                        # Email (free: 100/day)
 ```
+
+Optional tuning (defaults in brackets): `LLM_TIMEOUT` [20], `LLM_CONCURRENCY` [3],
+`JOB_WORKERS` [2], `RATE_LIMIT_DOUBT` [8/60], `RATE_LIMIT_TEST_GEN` [5/60],
+`SLOW_REQUEST_MS` [2000], `WARM_START` [1], `SCHEDULER_ENABLED` [1], `CACHE_DISABLED` [0].
 
 Removed: `QDRANT_URL`, `QDRANT_API_KEY`, `TAVILY_API_KEY` (delete them from Railway and
 your `.env`; `QDRANT_*` is only needed once, locally, if you run the Qdrant migration script).

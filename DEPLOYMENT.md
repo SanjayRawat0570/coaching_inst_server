@@ -26,6 +26,12 @@ table and the Storage bucket below. Nothing is applied automatically.
 Run these files from [`backend/migrations/`](backend/migrations/) in the SQL editor,
 **in this order** (each is safe to re-run):
 
+> Databases created from an older `schema.sql` may also lack the `study_plans` table
+> (the study-plan feature then fails quietly). Copy its `CREATE TABLE IF NOT EXISTS
+> study_plans …` block and index from [`backend/schema.sql`](backend/schema.sql) and run
+> it first. To see what's missing, query each table in the SQL editor — PostgREST
+> answers `PGRST205` for a table that doesn't exist.
+
 | # | File | What it adds |
 |---|------|--------------|
 | 1 | `2026-10-17_rag_server.sql` | `institutes.rag_tenant`, `institute_secrets` (per-institute RAG_SERVER key) |
