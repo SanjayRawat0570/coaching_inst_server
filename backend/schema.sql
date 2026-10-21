@@ -326,6 +326,17 @@ CREATE INDEX IF NOT EXISTS alerts_type_institute_idx ON alerts (alert_type, inst
 CREATE INDEX IF NOT EXISTS flashcards_review_idx ON flashcards (student_id, next_review);
 CREATE INDEX IF NOT EXISTS doubt_logs_student_idx ON doubt_logs (student_id, created_at);
 CREATE INDEX IF NOT EXISTS students_parent_email_idx ON students (parent_email);
+-- Performance Phase 2 (migrations/2026-10-22_performance_indexes.sql)
+CREATE INDEX IF NOT EXISTS tests_student_status_created_idx ON tests (student_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS tests_institute_status_created_idx ON tests (institute_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS tests_institute_created_idx ON tests (institute_id, created_at);
+CREATE INDEX IF NOT EXISTS alerts_institute_unread_risk_idx ON alerts (institute_id, is_read, risk_score DESC);
+CREATE INDEX IF NOT EXISTS students_institute_xp_idx ON students (institute_id, xp_points DESC);
+CREATE INDEX IF NOT EXISTS parent_reports_student_week_idx ON parent_reports (student_id, week_start DESC);
+CREATE INDEX IF NOT EXISTS concepts_name_idx ON concepts (name);
+CREATE INDEX IF NOT EXISTS concept_relationships_to_idx ON concept_relationships (to_concept, relationship);
+CREATE INDEX IF NOT EXISTS flashcards_next_review_idx ON flashcards (next_review);
+CREATE INDEX IF NOT EXISTS doubt_logs_created_idx ON doubt_logs (created_at);
 
 -- ── Row Level Security ────────────────────────────────────────────────────────
 -- Student-facing tables are guarded by RLS (anon/student keys). Backend agents

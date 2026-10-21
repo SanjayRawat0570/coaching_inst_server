@@ -116,6 +116,35 @@ def similar_concepts(query: str, top_k: int = 5) -> list[dict]:
         return []
 
 
+def prerequisites_of_many(concepts: list[str]) -> dict[str, list[str]]:
+    """prerequisites_of for several concepts in 3 queries in total (not 3 each).
+    Same result per concept (sorted by name); a concept not in the graph maps to []."""
+    names = [c for c in dict.fromkeys(concepts or []) if c]
+    out = {c: [] for c in names}
+    if not names:
+        return out
+    try:
+        sb = _supabase()
+        id_of = {}
+        for r in (sb.table("concepts").select("id, name").in_("name", names).execute().data or []):
+            id_of.setdefault(r["name"], r["id"])  # first match, like prerequisites_of
+        if not id_of:
+            return out
+        edges = (sb.table("concept_relationships").select("from_concept, to_concept")
+                 .in_("to_concept", list(id_of.values())).eq("relationship", "prerequisite_of")
+                 .execute().data or [])
+        from_ids = list({e["from_concept"] for e in edges})
+        prereq_rows = (sb.table("concepts").select("id, name").in_("id", from_ids)
+                       .execute().data or []) if from_ids else []
+        for c, cid in id_of.items():
+            mine = {e["from_concept"] for e in edges if e["to_concept"] == cid}
+            out[c] = sorted(r["name"] for r in prereq_rows if r["id"] in mine)
+        return out
+    except Exception as e:
+        print(f"[knowledge_graph] prerequisites_of_many failed: {e}")
+        return out
+
+
 def prerequisites_of(concept: str) -> list[str]:
     """Return names of concepts that are prerequisites of the given concept."""
     try:
@@ -132,7 +161,7 @@ def prerequisites_of(concept: str) -> list[str]:
         if not ids:
             return []
         rows = (sb.table("concepts").select("name").in_("id", ids).execute().data or [])
-        return [r["name"] for r in rows]
+        return sorted(r["name"] for r in rows)  # stable order (the query has no ORDER BY)
     except Exception as e:
         print(f"[knowledge_graph] prerequisites_of failed: {e}")
         return []

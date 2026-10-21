@@ -42,18 +42,24 @@ def _nightly_inactivity_alerts():
 def _flashcard_reminders():
     """Notify students who have flashcards due now."""
     from auth.supabase_auth import get_supabase
-    from agents.flashcard_agent import due_cards
+    from agents.flashcard_agent import due_counts_by_student
     from notifications import notify
 
+    # One paged read of all due cards instead of one query per student.
+    due = due_counts_by_student()
+    if not due:
+        return
     sb = get_supabase()
-    students = sb.table("students").select("id, name, email").execute().data or []
+    ids, students = list(due), []
+    for i in range(0, len(ids), 200):  # chunks keep the id list's URL short
+        students += (sb.table("students").select("id, name, email")
+                     .in_("id", ids[i:i + 200]).execute().data or [])
     for s in students:
-        cards = due_cards(s["id"])
-        if cards:
+        if due.get(s["id"]):
             notify(
                 to_email=s.get("email"),
                 subject="Flashcards due",
-                body=f"{s.get('name','You')} have {len(cards)} flashcards to revise today.",
+                body=f"{s.get('name','You')} have {due[s['id']]} flashcards to revise today.",
             )
 
 

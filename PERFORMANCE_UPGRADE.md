@@ -178,3 +178,22 @@ Other numbers:
 - LLM: Groq's `llama-3.3-70b-versatile` returns 404 model_not_found today. Before,
   that error reached the user; now the call fails over to Gemini (answered in 5.3 s)
   and Groq is skipped for 60 s.
+
+## Phase 2 results (2026-10-22)
+
+Same machine and command. "No cache" = `--no-cache` (the queries themselves);
+"cached" = a repeat visit within the TTL. The indexes migration is **not applied yet**,
+so these numbers are without it.
+
+| Endpoint | Phase 1 p50 | Phase 2 p50, no cache | Phase 2 p50, cached | Supabase calls (Phase 0 → now) |
+|---|---|---|---|---|
+| /teacher/overview | 236 ms | 120 ms (3 reads in parallel) | 15 ms | 4 → 4 (0 when cached) |
+| /admin/analytics | 439 ms | 167 ms (5 reads in parallel) | 11 ms | 8 → 7 (0 when cached) |
+| /parent/report (1 child) | 370 ms | 192 ms | not cached | 8 → 6 (2 children: 15 → 6) |
+| /leaderboard | 61 ms | 59 ms | 10 ms | 3 → 1 (0 when cached) |
+| /student/concept-map | – | 47 ms (bench student has no weak concepts) | 7 ms | 1 + 3 per concept → 3 |
+
+Concept map on real data (6 weak concepts): 18 → 3 Supabase calls, 787 → 127 ms,
+identical results. Weekly summary for 5 students: 25 → 4 queries, 1221 → 196 ms,
+identical values. Test submit: weakness_map 2 queries per concept → 2 in total.
+Flashcard reminder job: 1 + 1 per student → 1 paged read + 1 per 200 due students.

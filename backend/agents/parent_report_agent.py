@@ -15,29 +15,69 @@ def _supabase():
     return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
-def _week_summary(sb, student_id: str) -> dict:
+MAX_ROWS = 1000  # PostgREST's default row cap per request
+
+
+def _week_summaries(sb, student_ids: list[str], streaks: dict | None = None) -> dict:
+    """This week's summary for several students in 3–4 queries in total (not 5 per
+    student). streaks: {student_id: streak_days} when the caller already has it."""
+    ids = [i for i in dict.fromkeys(student_ids or []) if i]
+    if not ids:
+        return {}
     week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    doubts = (sb.table("doubt_logs").select("id", count="exact")
-              .eq("student_id", student_id).gte("created_at", week_ago).execute())
-    tests = (sb.table("tests").select("score, total_marks, subject, created_at")
-             .eq("student_id", student_id).gte("created_at", week_ago).execute()).data or []
-    weak = (sb.table("weakness_map").select("concept, score")
-            .eq("student_id", student_id).order("score", desc=False).limit(3).execute()).data or []
-    strong = (sb.table("weakness_map").select("concept, score")
-              .eq("student_id", student_id).order("score", desc=True).limit(3).execute()).data or []
-    prof = (sb.table("students").select("streak_days")
-            .eq("id", student_id).limit(1).execute()).data or []
-    return {
-        "doubts": doubts.count or 0,
-        "tests_taken": len(tests),
-        "avg_pct": round(
-            sum((t["score"] / t["total_marks"] * 100)
-                for t in tests if t.get("total_marks")) / len(tests), 1
-        ) if tests else None,
-        "streak_days": (prof[0].get("streak_days") if prof else 0) or 0,
-        "weak_concepts": [w["concept"] for w in weak],
-        "strong_concepts": [s["concept"] for s in strong],
-    }
+
+    doubt_rows = (sb.table("doubt_logs").select("student_id")
+                  .in_("student_id", ids).gte("created_at", week_ago)
+                  .limit(MAX_ROWS).execute()).data or []
+    doubts = {i: 0 for i in ids}
+    for d in doubt_rows:
+        if d.get("student_id") in doubts:
+            doubts[d["student_id"]] += 1
+    if len(doubt_rows) >= MAX_ROWS:  # capped: count each student exactly
+        for i in ids:
+            doubts[i] = (sb.table("doubt_logs").select("id", count="exact")
+                         .eq("student_id", i).gte("created_at", week_ago).execute()).count or 0
+
+    tests = {i: [] for i in ids}
+    for t in (sb.table("tests").select("student_id, score, total_marks, subject, created_at")
+              .in_("student_id", ids).gte("created_at", week_ago).execute()).data or []:
+        tests.setdefault(t.get("student_id"), []).append(t)
+
+    concepts = {i: [] for i in ids}
+    for w in (sb.table("weakness_map").select("student_id, concept, score")
+              .in_("student_id", ids).execute()).data or []:
+        concepts.setdefault(w.get("student_id"), []).append(w)
+
+    if streaks is None:
+        streaks = {s["id"]: s.get("streak_days") for s in
+                   (sb.table("students").select("id, streak_days").in_("id", ids).execute()).data or []}
+
+    out = {}
+    for i in ids:
+        rows = concepts.get(i, [])
+        # Postgres order: ascending puts NULL scores last, descending first. Ties are
+        # broken by concept name (Postgres left them in no fixed order).
+        weak = sorted(rows, key=lambda w: (w.get("score") is None, w.get("score") or 0,
+                                           w.get("concept") or ""))[:3]
+        strong = sorted(rows, key=lambda w: (w.get("score") is not None, -(w.get("score") or 0),
+                                             w.get("concept") or ""))[:3]
+        ts = tests.get(i, [])
+        out[i] = {
+            "doubts": doubts.get(i, 0),
+            "tests_taken": len(ts),
+            "avg_pct": round(
+                sum((t["score"] / t["total_marks"] * 100)
+                    for t in ts if t.get("total_marks")) / len(ts), 1
+            ) if ts else None,
+            "streak_days": streaks.get(i) or 0,
+            "weak_concepts": [w["concept"] for w in weak],
+            "strong_concepts": [s["concept"] for s in strong],
+        }
+    return out
+
+
+def _week_summary(sb, student_id: str) -> dict:
+    return _week_summaries(sb, [student_id])[student_id]
 
 
 def _report_html(name: str, report_text: str, summary: dict) -> str:

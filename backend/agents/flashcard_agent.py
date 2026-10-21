@@ -76,6 +76,23 @@ def due_cards(student_id: str) -> list[dict]:
         return []
 
 
+def due_counts_by_student(page_size: int = 1000) -> dict[str, int]:
+    """{student_id: number of cards due today or earlier} for every student, read
+    in pages (instead of one due_cards() query per student)."""
+    counts: dict[str, int] = {}
+    sb, start = _supabase(), 0
+    while True:
+        rows = (sb.table("flashcards").select("student_id")
+                .lte("next_review", date.today().isoformat())
+                .order("id").range(start, start + page_size - 1).execute().data or [])
+        for r in rows:
+            if r.get("student_id"):
+                counts[r["student_id"]] = counts.get(r["student_id"], 0) + 1
+        if len(rows) < page_size:
+            return counts
+        start += page_size
+
+
 def _material_block(material: list[tuple[str, list[dict]]]) -> tuple[str, list[dict]]:
     """Prompt text with chunks numbered across all concepts, plus that flat chunk list."""
     lines, flat = [], []

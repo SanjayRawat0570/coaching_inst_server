@@ -91,6 +91,7 @@ def _endpoints(users, include_writes, test_id):
         ("GET", "/progress", "student", None),
         ("GET", "/leaderboard", "student", None),
         ("GET", "/flashcards/due", "student", None),
+        ("GET", "/student/concept-map", "student", None),
         ("GET", f"/teacher/overview?institute_id={teacher_inst}", "teacher", None),
         ("GET", f"/teacher/students?institute_id={teacher_inst}", "teacher", None),
         ("GET", f"/teacher/alerts?institute_id={teacher_inst}", "teacher", None),
@@ -273,7 +274,11 @@ def main():
     p.add_argument("--truststore", action="store_true",
                    help="use the OS certificate store (networks with TLS interception)")
     p.add_argument("--json", help="also save the results to this file")
+    p.add_argument("--no-cache", action="store_true",
+                   help="in-process: bypass the response cache (measures the queries themselves)")
     args = p.parse_args()
+    if args.no_cache:
+        os.environ["CACHE_DISABLED"] = "1"
     if args.truststore:
         import truststore
         truststore.inject_into_ssl()

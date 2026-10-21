@@ -34,6 +34,7 @@ Run these files from [`backend/migrations/`](backend/migrations/) in the SQL edi
 | 4 | `2026-10-18_grounded_agents.sql` | `flashcards.source`, `nta_cutoffs` table (rank predictor) |
 | 5 | `2026-10-18_remove_old_rag.sql` | `student_memories` (pgvector long-term memory, replaces Qdrant) |
 | 6 | `2026-10-18_insights.sql` | `doubt_clusters.source` (each hot topic's top RAG_SERVER source) |
+| 7 | `2026-10-22_performance_indexes.sql` | Indexes for the dashboard / leaderboard / parent-report queries (adds indexes only, changes no data) |
 
 ### Storage bucket
 The app stores teachers' original study-material files in a **private** bucket named

@@ -23,10 +23,12 @@ def rag_env(monkeypatch):
 def fresh_process_state():
     """Shared clients / caches are per process; give every test a clean slate so
     one test's fakes never leak into the next."""
+    import cache
     from rag import rag_server_client
     from graph import llm
     rag_server_client.reset_clients()
     llm.reset_circuits()
+    cache.clear()
     if "main" in sys.modules:
         sys.modules["main"]._student_cache.clear()
     yield
@@ -75,6 +77,10 @@ class _FakeQuery:
         self.op, self.payload = "update", row
         return self
 
+    def upsert(self, row, **_):
+        self.op, self.payload = "upsert", row
+        return self
+
     def delete(self):
         self.op = "delete"
         return self
@@ -91,6 +97,9 @@ class _FakeQuery:
 
     def gte(self, key, value):
         return self._filter("gte", key, value)
+
+    def lte(self, key, value):
+        return self._filter("lte", key, value)
 
     def ilike(self, key, value):
         return self._filter("ilike", key, value)
@@ -121,7 +130,7 @@ class _FakeQuery:
             rows = rows(self)
         if isinstance(rows, Exception):
             raise rows
-        return SimpleNamespace(data=rows)
+        return SimpleNamespace(data=rows, count=len(rows or []))
 
 
 class FakeStorage:

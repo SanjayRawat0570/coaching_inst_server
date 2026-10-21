@@ -20,6 +20,14 @@ from pydantic import BaseModel
 load_dotenv()
 
 from auth.supabase_auth import get_current_user, require_role, get_supabase  # noqa: E402
+import cache  # noqa: E402
+
+# Seconds the heavy read endpoints are cached per institute / student (cache.py).
+# The writes that change them invalidate the entry; the TTL covers the rest.
+LEADERBOARD_TTL = 30
+TEACHER_OVERVIEW_TTL = 30
+ADMIN_ANALYTICS_TTL = 60
+CONCEPT_MAP_TTL = 120
 
 # Warm-start state, reported by /ready.
 _warm = {"supabase": False, "embedder": False, "started_at": time.time()}
@@ -524,6 +532,7 @@ def submit_test(req: SubmitTestRequest, background: BackgroundTasks,
         print(f"[submit] flashcard generation failed: {e}")
 
     background.add_task(_award_activity, student_id, "test")
+    cache.invalidate_student(student_id)  # weakness map changed -> concept map
 
     # 3) Return the authoritative numbers from the DB row (evaluator wrote them).
     row = (sb.table("tests").select("score, total_marks, status")
@@ -633,31 +642,36 @@ def generate_study_plan(user=Depends(get_current_user)):
 @app.get("/student/concept-map")
 def get_concept_map(user=Depends(get_current_user)):
     """Tree of the student's weak concepts and their prerequisites (cached edges)."""
-    from graph.knowledge_graph import prerequisites_of
-    sb = get_supabase()
+    from graph.knowledge_graph import prerequisites_of_many
     sid = _resolve_student_id(user)
-    weak = (sb.table("weakness_map").select("subject, concept, score")
-            .eq("student_id", sid).order("score", desc=False).limit(6).execute()).data or []
-    nodes = [{"concept": w["concept"], "subject": w.get("subject"),
-              "score": w.get("score"), "prerequisites": prerequisites_of(w["concept"])}
-             for w in weak]
-    has_edges = any(n["prerequisites"] for n in nodes)
-    return {"nodes": nodes, "built": has_edges}
+
+    def build():
+        weak = (get_supabase().table("weakness_map").select("subject, concept, score")
+                .eq("student_id", sid).order("score", desc=False).limit(6).execute()).data or []
+        prereqs = prerequisites_of_many([w["concept"] for w in weak])
+        nodes = [{"concept": w["concept"], "subject": w.get("subject"),
+                  "score": w.get("score"), "prerequisites": prereqs.get(w["concept"], [])}
+                 for w in weak]
+        return {"nodes": nodes, "built": any(n["prerequisites"] for n in nodes)}
+
+    return cache.get_or_set(("concept_map", sid), CONCEPT_MAP_TTL, build)
 
 
 @app.post("/student/concept-map/build")
 def build_concept_map(user=Depends(get_current_user)):
     """Infer & cache prerequisites (via LLM) for the student's weak concepts."""
-    from graph.knowledge_graph import link_prerequisites, prerequisites_of
+    from graph.knowledge_graph import link_prerequisites, prerequisites_of_many
     sb = get_supabase()
     sid = _resolve_student_id(user)
     weak = (sb.table("weakness_map").select("subject, concept, score")
             .eq("student_id", sid).order("score", desc=False).limit(6).execute()).data or []
-    nodes = []
     for w in weak:
         link_prerequisites(w["concept"], subject=w.get("subject"))
-        nodes.append({"concept": w["concept"], "subject": w.get("subject"),
-                      "score": w.get("score"), "prerequisites": prerequisites_of(w["concept"])})
+    prereqs = prerequisites_of_many([w["concept"] for w in weak])
+    nodes = [{"concept": w["concept"], "subject": w.get("subject"),
+              "score": w.get("score"), "prerequisites": prereqs.get(w["concept"], [])}
+             for w in weak]
+    cache.invalidate_student(sid)
     return {"nodes": nodes, "built": True}
 
 
@@ -665,12 +679,16 @@ def build_concept_map(user=Depends(get_current_user)):
 @app.get("/leaderboard")
 def leaderboard(user=Depends(get_current_user)):
     """F10: top-10 students by XP within the requester's institute."""
-    sb = get_supabase()
     sid = _resolve_student_id(user)
     inst = _as_uuid((_student_row(user["id"]) or {}).get("institute_id"))
-    q = sb.table("students").select("id, name, email, xp_points, streak_days")
-    q = q.eq("institute_id", inst) if inst else q.is_("institute_id", "null")
-    rows = q.order("xp_points", desc=True).limit(10).execute().data or []
+
+    def top10():
+        q = get_supabase().table("students").select("id, name, email, xp_points, streak_days")
+        q = q.eq("institute_id", inst) if inst else q.is_("institute_id", "null")
+        return q.order("xp_points", desc=True).limit(10).execute().data or []
+
+    # The ranking is shared per institute; "is_me" is worked out per caller.
+    rows = cache.get_or_set(("leaderboard", inst), LEADERBOARD_TTL, top10)
     board = [{
         "rank": i + 1,
         "name": r.get("name") or r.get("email") or "Student",
@@ -830,39 +848,48 @@ def teacher_overview(institute_id: str = "", user=Depends(require_role("teacher"
     Scopes to the teacher's institute when given a valid one; otherwise spans all
     students (single-institute / demo setups where accounts have no institute).
     """
+    inst = _as_uuid(institute_id)
+    return cache.get_or_set(("teacher_overview", user.get("role"), inst),
+                            TEACHER_OVERVIEW_TTL, lambda: _teacher_overview(inst))
+
+
+def _teacher_overview(inst: str | None) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timedelta, timezone
     sb = get_supabase()
-    inst = _as_uuid(institute_id)
 
     students_q = sb.table("students").select("id")
     if inst:
         students_q = students_q.eq("institute_id", inst)
     student_ids = [s["id"] for s in (students_q.execute().data or [])]
 
-    # Heatmap: average mastery per concept across the class
-    heatmap = []
-    if student_ids:
+    def heatmap():
+        """Average mastery per concept across the class."""
+        if not student_ids:
+            return []
         rows = (sb.table("weakness_map").select("concept, score")
                 .in_("student_id", student_ids).execute().data or [])
         agg = {}
         for r in rows:
             agg.setdefault(r["concept"], []).append(r.get("score") or 0)
-        heatmap = sorted(
+        return sorted(
             ({"concept": c, "avg_score": round(sum(v) / len(v), 3)} for c, v in agg.items()),
             key=lambda x: x["avg_score"],
         )
 
-    # content_gap alerts are shown by /teacher/rag-insights, and the dashboard drops
-    # them from this list, so they aren't sent here. Capped: the newest-risk 200.
-    alerts_q = (sb.table("alerts").select("*").eq("is_read", False)
-                .or_("alert_type.is.null,alert_type.neq.content_gap"))
-    if inst:
-        alerts_q = alerts_q.eq("institute_id", inst)
-    alerts = (alerts_q.order("risk_score", desc=True).limit(200).execute().data or [])
+    def alerts():
+        # content_gap alerts are shown by /teacher/rag-insights, and the dashboard
+        # drops them from this list, so they aren't sent here. Capped at 200.
+        q = (sb.table("alerts").select("*").eq("is_read", False)
+             .or_("alert_type.is.null,alert_type.neq.content_gap"))
+        if inst:
+            q = q.eq("institute_id", inst)
+        return q.order("risk_score", desc=True).limit(200).execute().data or []
 
-    # Top doubts this week (simple frequency over recent questions)
-    top_doubts = []
-    if student_ids:
+    def top_doubts():
+        """Most-asked questions this week (simple frequency)."""
+        if not student_ids:
+            return []
         week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         doubts = (sb.table("doubt_logs").select("question")
                   .in_("student_id", student_ids).gte("created_at", week_ago)
@@ -872,10 +899,13 @@ def teacher_overview(institute_id: str = "", user=Depends(require_role("teacher"
             key = (d.get("question") or "").strip()[:120]
             if key:
                 freq[key] = freq.get(key, 0) + 1
-        top_doubts = [{"question": q, "count": n}
-                      for q, n in sorted(freq.items(), key=lambda x: -x[1])[:10]]
+        return [{"question": q, "count": n}
+                for q, n in sorted(freq.items(), key=lambda x: -x[1])[:10]]
 
-    return {"heatmap": heatmap, "alerts": alerts, "top_doubts": top_doubts}
+    # The three reads are independent: run them side by side.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        h, a, d = pool.submit(heatmap), pool.submit(alerts), pool.submit(top_doubts)
+        return {"heatmap": h.result(), "alerts": a.result(), "top_doubts": d.result()}
 
 
 @app.get("/teacher/tests/pending")
@@ -1163,6 +1193,8 @@ async def delete_study_material(material_id: str, user=Depends(require_role("tea
 def mark_alert_read(req: MarkAlertRequest, user=Depends(require_role("teacher", "admin"))):
     sb = get_supabase()
     sb.table("alerts").update({"is_read": True}).eq("id", req.alert_id).execute()
+    cache.invalidate_kind("teacher_overview")  # its alert list must not show it again
+    cache.invalidate_kind("admin_analytics")   # at-risk count
     return {"alert_id": req.alert_id, "is_read": True}
 
 
@@ -1176,29 +1208,46 @@ def parent_report(user=Depends(require_role("parent"))):
     than one child, so we return a `children` list; the top-level fields mirror the
     first child for backward compatibility.
     """
-    from agents.parent_report_agent import _week_summary
+    from concurrent.futures import ThreadPoolExecutor
+    from agents.parent_report_agent import _week_summaries
     sb = get_supabase()
 
     # Match case-insensitively against the normalised (lowercased) parent_email.
     parent_email = (user.get("email") or "").strip().lower()
     students = (sb.table("students")
-                .select("id, name, predicted_rank, target_college, target_rank")
+                .select("id, name, streak_days, predicted_rank, target_college, target_rank")
                 .eq("parent_email", parent_email)
                 .order("created_at").execute().data) or []
     if not students:
         return {"student_name": None, "summary": {}, "latest_report": None, "children": []}
 
+    ids = [s["id"] for s in students]
+    streaks = {s["id"]: s.get("streak_days") for s in students}
+
+    def latest_reports():
+        return _top_per_student(
+            lambda q_ids: (sb.table("parent_reports").select("student_id, report_text, week_start")
+                           .in_("student_id", q_ids).order("week_start", desc=True)), ids, 1)
+
+    def recent_tests():
+        return _top_per_student(lambda q_ids: _recent_results_query(sb, q_ids), ids, 10)
+
+    # Same data for any number of children in 6 queries, run side by side
+    # (it used to be 1 + 7 per child, one after another).
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_sum = pool.submit(_week_summaries, sb, ids, streaks)
+        f_rep, f_tests = pool.submit(latest_reports), pool.submit(recent_tests)
+        summaries, reports, tests = f_sum.result(), f_rep.result(), f_tests.result()
+
     children = []
     for student in students:
-        latest = (sb.table("parent_reports").select("report_text, week_start")
-                  .eq("student_id", student["id"]).order("week_start", desc=True)
-                  .limit(1).execute().data)
+        latest = reports.get(student["id"]) or []
         children.append({
             "student_id": student["id"],
             "student_name": student.get("name"),
-            "summary": _week_summary(sb, student["id"]),
+            "summary": summaries.get(student["id"], {}),
             "latest_report": latest[0]["report_text"] if latest else None,
-            "recent_tests": _recent_results(sb, [student["id"]]),
+            "recent_tests": [_with_percent(t) for t in tests.get(student["id"], [])],
             # F9: goal + progress toward it (from the F5 predicted rank).
             "predicted_rank": student.get("predicted_rank"),
             "target_college": student.get("target_college"),
@@ -1292,9 +1341,15 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
     platform-wide view across all institutes. Uses the service-role key, so it
     bypasses RLS and can read every account.
     """
+    iid = _as_uuid(institute_id)  # None → no institute filter (see everything)
+    return cache.get_or_set(("admin_analytics", iid), ADMIN_ANALYTICS_TTL,
+                            lambda: _admin_analytics(iid))
+
+
+def _admin_analytics(iid: str | None) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timedelta, timezone
     sb = get_supabase()
-    iid = _as_uuid(institute_id)  # None → no institute filter (see everything)
 
     # ── Students (full records) ────────────────────────────────────────────
     sq = sb.table("students").select(
@@ -1304,6 +1359,7 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
     if iid:
         sq = sq.eq("institute_id", iid)
     students = sq.order("created_at", desc=True).execute().data or []
+    ids = [s["id"] for s in students]
     total = len(students)
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
@@ -1313,60 +1369,68 @@ def admin_analytics(institute_id: str = "", user=Depends(require_role("admin")))
 
     active = sum(1 for s in students if _active(s))
 
-    aq = sb.table("alerts").select("id", count="exact").eq("is_read", False)
-    if iid:
-        aq = aq.eq("institute_id", iid)
-    at_risk = aq.execute().count or 0
+    def at_risk():
+        aq = sb.table("alerts").select("id", count="exact").eq("is_read", False)
+        if iid:
+            aq = aq.eq("institute_id", iid)
+        return aq.execute().count or 0
 
-    tq = sb.table("tests").select("id", count="exact").gte("created_at", week_ago.isoformat())
-    if iid:
-        tq = tq.eq("institute_id", iid)
-    tests_week = tq.execute().count or 0
+    def tests_week():
+        tq = sb.table("tests").select("id", count="exact").gte("created_at", week_ago.isoformat())
+        if iid:
+            tq = tq.eq("institute_id", iid)
+        return tq.execute().count or 0
 
-    engagement_rate = round((active / total) * 100, 1) if total else 0.0
+    def accounts():
+        """All auth accounts, grouped by role."""
+        out = {"student": [], "teacher": [], "parent": [], "admin": []}
+        try:
+            res = sb.auth.admin.list_users()
+            users = res if isinstance(res, list) else getattr(res, "users", []) or []
+            for u in users:
+                meta = u.user_metadata or {}
+                role = meta.get("role") or "student"
+                out.setdefault(role, []).append({
+                    "id": u.id,
+                    "email": u.email,
+                    "name": meta.get("name") or u.email,
+                    "role": role,
+                    "institute_id": meta.get("institute_id"),
+                    "parent_email": meta.get("parent_email"),
+                    "created_at": str(getattr(u, "created_at", "") or ""),
+                    "last_sign_in": str(getattr(u, "last_sign_in_at", "") or ""),
+                })
+        except Exception as e:
+            print(f"[admin] list_users failed: {e}")
+        return out
 
-    # ── All auth accounts, grouped by role ─────────────────────────────────
-    accounts = {"student": [], "teacher": [], "parent": [], "admin": []}
-    try:
-        res = sb.auth.admin.list_users()
-        users = res if isinstance(res, list) else getattr(res, "users", []) or []
-        for u in users:
-            meta = u.user_metadata or {}
-            role = meta.get("role") or "student"
-            entry = {
-                "id": u.id,
-                "email": u.email,
-                "name": meta.get("name") or u.email,
-                "role": role,
-                "institute_id": meta.get("institute_id"),
-                "parent_email": meta.get("parent_email"),
-                "created_at": str(getattr(u, "created_at", "") or ""),
-                "last_sign_in": str(getattr(u, "last_sign_in_at", "") or ""),
-            }
-            accounts.setdefault(role, []).append(entry)
-    except Exception as e:
-        print(f"[admin] list_users failed: {e}")
-
-    return {
-        "active_students": active,
-        "at_risk_count": at_risk,
-        "tests_week": tests_week,
-        "engagement_rate": engagement_rate,  # active/total % — a real, computed metric
-        "engagement": _weekly_engagement(sb, [s["id"] for s in students]),
-        "counts": {
-            "students": len(accounts["student"]),
-            "teachers": len(accounts["teacher"]),
-            "parents": len(accounts["parent"]),
-            "admins": len(accounts["admin"]),
-        },
-        "students": students,
-        "recent_results": _recent_results(sb, [s["id"] for s in students],
-                                          limit=20, with_names=True),
-        "teachers": accounts["teacher"],
-        "parents": accounts["parent"],
-        "admins": accounts["admin"],
-        "student_accounts": accounts["student"],
-    }
+    names = {s["id"]: s for s in students}  # recent results reuse these, no extra query
+    # Platform-wide (no institute): every student is included, so skip the id list.
+    scope_ids = ids if iid else None
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_risk, f_tests, f_acc = pool.submit(at_risk), pool.submit(tests_week), pool.submit(accounts)
+        f_eng = pool.submit(_weekly_engagement, sb, ids, 6, scope_ids is None)
+        f_recent = pool.submit(_recent_results, sb, ids, 20, True, names)
+        acc = f_acc.result()
+        return {
+            "active_students": active,
+            "at_risk_count": f_risk.result(),
+            "tests_week": f_tests.result(),
+            "engagement_rate": round((active / total) * 100, 1) if total else 0.0,
+            "engagement": f_eng.result(),
+            "counts": {
+                "students": len(acc["student"]),
+                "teachers": len(acc["teacher"]),
+                "parents": len(acc["parent"]),
+                "admins": len(acc["admin"]),
+            },
+            "students": students,
+            "recent_results": f_recent.result(),
+            "teachers": acc["teacher"],
+            "parents": acc["parent"],
+            "admins": acc["admin"],
+            "student_accounts": acc["student"],
+        }
 
 
 @app.get("/admin/rag/health")
@@ -1428,11 +1492,14 @@ def _parse_dt(value):
         return None
 
 
-def _weekly_engagement(sb, student_ids: list[str], weeks: int = 6) -> list[dict]:
+def _weekly_engagement(sb, student_ids: list[str], weeks: int = 6,
+                       everyone: bool = False) -> list[dict]:
     """Real weekly active-student counts over the last `weeks` weeks.
 
     A student is 'active' in a week if they asked a doubt or took a test that week.
     Returns a continuous series [{week, active}] so the chart never has gaps.
+    everyone=True: student_ids is every student (platform-wide view), so the rows
+    aren't filtered by an id list — the same rows, without a huge URL.
     """
     from datetime import datetime, timezone, timedelta
     ids = [i for i in (student_ids or []) if i]
@@ -1443,13 +1510,16 @@ def _weekly_engagement(sb, student_ids: list[str], weeks: int = 6) -> list[dict]
     buckets = {}  # Monday-of-week date -> set(student_id)
     for tbl in ("doubt_logs", "tests"):
         try:
-            rows = (sb.table(tbl).select("student_id, created_at")
-                    .in_("student_id", ids)
-                    .gte("created_at", start.isoformat()).execute().data) or []
+            q = sb.table(tbl).select("student_id, created_at")
+            if not everyone:
+                q = q.in_("student_id", ids)
+            rows = q.gte("created_at", start.isoformat()).execute().data or []
         except Exception as e:
             print(f"[engagement] {tbl} fetch failed: {e}")
             rows = []
         for r in rows:
+            if not r.get("student_id"):
+                continue
             dt = _parse_dt(r.get("created_at"))
             if not dt:
                 continue
@@ -1463,35 +1533,67 @@ def _weekly_engagement(sb, student_ids: list[str], weeks: int = 6) -> list[dict]
     return series
 
 
+def _recent_results_query(sb, ids: list[str]):
+    return (sb.table("tests")
+            .select("id, student_id, subject, score, total_marks, status, created_at")
+            .in_("student_id", ids)
+            .eq("status", "evaluated")
+            .order("created_at", desc=True))
+
+
+def _with_percent(t: dict) -> dict:
+    t["percent"] = (round((t.get("score") or 0) / t["total_marks"] * 100)
+                    if t.get("total_marks") else None)
+    return t
+
+
 def _recent_results(sb, student_ids: list[str], limit: int = 10,
-                    with_names: bool = False) -> list[dict]:
+                    with_names: bool = False, names: dict | None = None) -> list[dict]:
     """Recent evaluated test results for the given students, newest first.
 
     Returns each test's score, total and computed percent so the student, parent
     and admin dashboards can all show the same result once a test is submitted.
-    Set with_names=True (admin/multi-student views) to attach the student's name.
+    Set with_names=True (admin/multi-student views) to attach the student's name;
+    pass names={id: {name, email}} when the caller already has them.
     """
     ids = [i for i in (student_ids or []) if i]
     if not ids:
         return []
-    rows = (sb.table("tests")
-            .select("id, student_id, subject, score, total_marks, status, created_at")
-            .in_("student_id", ids)
-            .eq("status", "evaluated")
-            .order("created_at", desc=True)
-            .limit(limit).execute().data) or []
-    names = {}
-    if with_names:
+    rows = _recent_results_query(sb, ids).limit(limit).execute().data or []
+    if with_names and names is None:
         srows = (sb.table("students").select("id, name, email")
                  .in_("id", ids).execute().data) or []
         names = {s["id"]: s for s in srows}
     for t in rows:
-        t["percent"] = (round((t.get("score") or 0) / t["total_marks"] * 100)
-                        if t.get("total_marks") else None)
+        _with_percent(t)
         if with_names:
             s = names.get(t.get("student_id")) or {}
             t["student_name"] = s.get("name") or s.get("email") or "Unknown"
     return rows
+
+
+def _top_per_student(make_query, ids: list[str], n: int) -> dict[str, list[dict]]:
+    """The first n rows per student of an ordered query, in one round trip.
+
+    make_query(ids) -> an ordered query filtered to those student ids. One query
+    with limit n * len(ids); if that limit was hit, a student may have been crowded
+    out by another, so only those with fewer than n rows are re-fetched on their own.
+    """
+    ids = [i for i in dict.fromkeys(ids or []) if i]
+    out: dict[str, list[dict]] = {i: [] for i in ids}
+    if not ids:
+        return out
+    cap = n * len(ids)
+    rows = make_query(ids).limit(cap).execute().data or []
+    for r in rows:
+        bucket = out.get(r.get("student_id"))
+        if bucket is not None and len(bucket) < n:
+            bucket.append(r)
+    if len(rows) >= cap and len(ids) > 1:
+        for i in ids:
+            if len(out[i]) < n:
+                out[i] = make_query([i]).limit(n).execute().data or []
+    return out
 
 
 # XP granted per activity — keeps the progress page's gamification meaningful.
@@ -1512,7 +1614,7 @@ def _award_activity(student_id: str, kind: str) -> None:
     from datetime import datetime, timedelta, timezone
     try:
         sb = get_supabase()
-        row = (sb.table("students").select("xp_points, streak_days, last_active, email")
+        row = (sb.table("students").select("xp_points, streak_days, last_active, email, institute_id")
                .eq("id", student_id).limit(1).execute()).data
         cur = row[0] if row else {}
 
@@ -1543,6 +1645,8 @@ def _award_activity(student_id: str, kind: str) -> None:
         _log_activity_event(sb, cur.get("email"), kind)
         # F11: re-check badge criteria after each activity (best-effort).
         _award_badges(student_id)
+        # XP / streak / scores changed: drop the institute's cached dashboards.
+        cache.invalidate_institute(_as_uuid(cur.get("institute_id")))
     except Exception as e:
         print(f"[gamify] award failed for {student_id}: {e}")
 

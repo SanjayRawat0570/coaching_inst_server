@@ -17,37 +17,36 @@ def _supabase():
     return get_supabase()  # one shared client per process (a new one costs ~1 s)
 
 
-def _update_concept(sb, student_id, subject, concept, new_score) -> dict:
-    """Upsert one concept's EMA score in weakness_map. Returns the new row state."""
-    existing = (
-        sb.table("weakness_map")
-        .select("score, attempts")
-        .eq("student_id", student_id)
-        .eq("subject", subject)
-        .eq("concept", concept)
-        .limit(1)
-        .execute()
-        .data
-    )
-    if existing:
-        prev = existing[0]["score"] or 0.0
-        attempts = (existing[0]["attempts"] or 0) + 1
-        score = round((1 - EMA_ALPHA) * prev + EMA_ALPHA * new_score, 3)
-    else:
-        prev = 0.0
-        attempts = 1
-        score = round(new_score, 3)
+def _update_concepts(sb, student_id, subject, new_scores: dict[str, float]) -> dict[str, dict]:
+    """Upsert the EMA score of several concepts in weakness_map with one read and
+    one write (it used to be a read + a write per concept). Returns per concept
+    the new row state."""
+    concepts = list(new_scores)
+    if not concepts:
+        return {}
+    existing = {}
+    for row in (sb.table("weakness_map").select("concept, score, attempts")
+                .eq("student_id", student_id).eq("subject", subject)
+                .in_("concept", concepts).execute().data or []):
+        existing.setdefault(row["concept"], row)  # first match, as limit(1) did
 
-    sb.table("weakness_map").upsert({
-        "student_id": student_id,
-        "subject": subject,
-        "concept": concept,
-        "score": score,
-        "attempts": attempts,
-    }, on_conflict="student_id,subject,concept").execute()
+    rows, out = [], {}
+    for concept, new_score in new_scores.items():
+        if concept in existing:
+            prev = existing[concept]["score"] or 0.0
+            attempts = (existing[concept]["attempts"] or 0) + 1
+            score = round((1 - EMA_ALPHA) * prev + EMA_ALPHA * new_score, 3)
+        else:
+            prev = 0.0
+            attempts = 1
+            score = round(new_score, 3)
+        rows.append({"student_id": student_id, "subject": subject, "concept": concept,
+                     "score": score, "attempts": attempts})
+        out[concept] = {"concept": concept, "previous": prev, "score": score,
+                        "crossed_mastery": prev < MASTERY_THRESHOLD <= score}
 
-    return {"concept": concept, "previous": prev, "score": score,
-            "crossed_mastery": prev < MASTERY_THRESHOLD <= score}
+    sb.table("weakness_map").upsert(rows, on_conflict="student_id,subject,concept").execute()
+    return out
 
 
 def progress_tracker_node(state: CoachingState) -> CoachingState:
@@ -62,11 +61,15 @@ def progress_tracker_node(state: CoachingState) -> CoachingState:
         student_id = state["student_id"]
         sb = _supabase()
 
-        updates = []
+        ratios = {}
         for concept, stats in per_concept.items():
             total = stats.get("total", 0) or 1
-            ratio = stats.get("correct", 0) / total  # 0..1 mastery signal
-            update = _update_concept(sb, student_id, subject, concept, ratio)
+            ratios[concept] = stats.get("correct", 0) / total  # 0..1 mastery signal
+        new_state = _update_concepts(sb, student_id, subject, ratios)
+
+        updates = []
+        for concept, ratio in ratios.items():
+            update = new_state[concept]
 
             # Knowledge graph: register the concept node; for weak concepts also
             # infer + wire prerequisite edges (recommend what to fix first).
